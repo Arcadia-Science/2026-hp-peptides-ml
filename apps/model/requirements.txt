@@ -1,0 +1,12 @@
+fastapi==0.110.0
+uvicorn[standard]==0.27.1
+torch
+torch-geometric
+torch-scatter
+torch-cluster
+torch-sparse
+torch-spline-conv
+e3nn
+numpy
+matplotlib
+pydantic==2.6.1

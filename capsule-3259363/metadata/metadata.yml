@@ -1,0 +1,16 @@
+metadata_version: 1
+name: Deep equivariant tensor attention Network(DetaNet)
+description: A geometric deep learning model for predicting molecular spectra with
+  high accuary and efficiency
+tags:
+- Graph neural network
+- equivariant message passing
+- raman-spectroscopy
+- infrared spectroscopy
+- uv-vis spectroscopy
+- NMR
+authors:
+- name: Zihan Zou
+- name: Wei Hu
+  affiliations:
+  - name: Qilu University of Technology (Shandong Academy of Science)

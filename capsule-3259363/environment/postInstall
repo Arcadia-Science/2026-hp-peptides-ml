@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -e
+
+pip install numpy
+pip install torch
+pip install e3nn
+pip install matplotlib
+pip install torch_scatter==2.0.9
+pip install torch_cluster==1.5.9
+pip install torch_sparse==0.6.12
+pip install torch_spline_conv==1.2.1
+pip install torch_geometric==2.0.2

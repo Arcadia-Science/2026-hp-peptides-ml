@@ -1,0 +1,7 @@
+.env/*
+.vscode/*
+*/__pycache__/
+*.pyc
+.DS_Store
+.__pycache__/
+code/detanet_model/modules/__pycache__
