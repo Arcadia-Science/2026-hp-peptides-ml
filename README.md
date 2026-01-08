@@ -1,4 +1,4 @@
-# ir-proteins-ml
+# hp-proteins-ml
 
 Scaffold for a DetaNet-backed inference API + model service, with Postgres for dataset registry and Redis caching.
 
