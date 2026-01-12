@@ -1,3 +1,4 @@
+import httpx
 from fastapi import FastAPI, HTTPException, Query
 
 from app import cache, db
@@ -137,7 +138,13 @@ async def predict(path: str, request: GeometryRequest, cache_prefix: str) -> dic
             return cached
 
     pos, z = await resolve_geometry(request)
-    result = await app.state.model_client.post(path, {"pos": pos, "z": z})
+    try:
+        result = await app.state.model_client.post(path, {"pos": pos, "z": z})
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text or "Model request failed"
+        raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="Model service unavailable") from exc
 
     if cache_key:
         await set_json(cache_key, result, settings.cache_ttl_seconds)
@@ -173,4 +180,10 @@ async def predict_nmr(request: GeometryRequest) -> dict:
 
 @app.post("/predict/nmr/aggregate")
 async def predict_nmr_aggregate(request: NmrAggregateRequest) -> dict:
-    return await app.state.model_client.post("/predict/nmr/aggregate", request.model_dump())
+    try:
+        return await app.state.model_client.post("/predict/nmr/aggregate", request.model_dump())
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text or "Model request failed"
+        raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="Model service unavailable") from exc

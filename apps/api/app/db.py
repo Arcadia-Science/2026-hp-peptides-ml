@@ -18,7 +18,11 @@ async def init_db() -> None:
     max_attempts = 10
     for attempt in range(1, max_attempts + 1):
         try:
-            _pool = await asyncpg.create_pool(dsn=settings.database_url, min_size=1, max_size=10)
+            _pool = await asyncpg.create_pool(
+                dsn=settings.database_url,
+                min_size=settings.database_min_pool_size,
+                max_size=settings.database_max_pool_size,
+            )
             return
         except Exception as exc:
             last_error = exc
