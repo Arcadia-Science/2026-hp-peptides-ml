@@ -171,8 +171,8 @@ class nmr_calculator(torch.nn.Module):
         '''refc and refh represent the reference shielding isotropic fraction of tetramethylsilane 
         (under the same calculation conditions as the reference data) '''
         self.device=device
-        self.nmrc_model=nmr_model(device,params='trained_param/qm9nmr/shield_iso_c.pth')
-        self.nmrh_model=nmr_model(device,params='trained_param/qm9nmr/shield_iso_h.pth')
+        self.nmrc_model=nmr_model(device,params='trained_param/latest/latest_shield_iso_c.pth')
+        self.nmrh_model=nmr_model(device,params='trained_param/latest/latest_shield_iso_h.pth')
         self.refc=refc
         self.refh=refh
 
