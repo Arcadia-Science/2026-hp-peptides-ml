@@ -92,6 +92,7 @@ class SmilesItem:
     smile: str
     pos: Optional[torch.Tensor] = None
     z: Optional[torch.Tensor] = None
+    edge_index: Optional[torch.Tensor] = None
 
 
 def ensure_data_available() -> None:
@@ -231,7 +232,7 @@ def radius_graph_from_k(
         row = idx.repeat_interleave(n)
         col = idx.repeat(n)
         mask = row != col
-        edge_index = torch.stack([row[mask], col[mask]], dim=0)
+        edge_index = torch.stack([col[mask], row[mask]], dim=0)
         radius = dists[dists.isfinite()].max().clamp(min=clamp_min, max=clamp_max)
         return edge_index, radius
 
@@ -452,13 +453,16 @@ def build_data_from_smiles(
     pos = pos.to(cfg.device)
     z = z.to(cfg.device)
 
-    edge_index, _ = radius_graph_from_k(
-        pos,
-        k=cfg.graph_k,
-        clamp_min=cfg.graph_clamp_min,
-        clamp_max=cfg.graph_clamp_max,
-        device=cfg.device,
-    )
+    if item.edge_index is not None:
+        edge_index = item.edge_index.to(cfg.device)
+    else:
+        edge_index, _ = radius_graph_from_k(
+            pos,
+            k=cfg.graph_k,
+            clamp_min=cfg.graph_clamp_min,
+            clamp_max=cfg.graph_clamp_max,
+            device=cfg.device,
+        )
 
     deepmd_supported = dipole_backend is not None and dipole_backend.supports(z)
     if polar_backend is not None:
