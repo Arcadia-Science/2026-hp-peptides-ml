@@ -3,6 +3,9 @@ from __future__ import annotations
 import argparse
 import csv
 import gzip
+import multiprocessing as mp
+import os
+import sqlite3
 import tarfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,7 +20,8 @@ from deepmd_backend import PTE_SYMBOLS
 @dataclass
 class DatasetJob:
     name: str
-    iterator: Iterable[pipeline.SmilesItem]
+    kind: str
+    path: Optional[Path]
     total: Optional[int]
     output_dir: Path
     cfg: pipeline.PipelineConfig
@@ -66,6 +70,8 @@ def iter_summary_csv(path: Path) -> Iterable[pipeline.SmilesItem]:
                 energy=energy,
                 dipole=dipole,
                 field_source=field_source,
+                subset=(row.get("SPLITS") or "").strip() or None,
+                source=path.name,
             )
 
 
@@ -122,6 +128,149 @@ def iter_raman_db(path: Path) -> Iterable[pipeline.SmilesItem]:
     yield from pipeline.iter_smiles(cfg)
 
 
+def iter_sdf_dir(path: Path) -> Iterable[pipeline.SmilesItem]:
+    from rdkit import Chem
+
+    idx = 0
+    for sdf_path in sorted(path.rglob("*.sdf")):
+        supplier = Chem.SDMolSupplier(str(sdf_path), removeHs=False)
+        for mol in supplier:
+            if mol is None:
+                continue
+            idx += 1
+            try:
+                smile = Chem.MolToSmiles(Chem.RemoveHs(mol), isomericSmiles=True)
+            except Exception:
+                smile = f"{sdf_path.stem}_{idx}"
+
+            pos = None
+            z = None
+            charges = None
+            try:
+                conf = mol.GetConformer()
+                coords = [[p.x, p.y, p.z] for p in (conf.GetAtomPosition(i) for i in range(mol.GetNumAtoms()))]
+                pos_t = torch.tensor(coords, dtype=torch.float32)
+                if pos_t.abs().sum().item() > 1e-6:
+                    pos = pos_t
+                    z = torch.tensor([atom.GetAtomicNum() for atom in mol.GetAtoms()], dtype=torch.long)
+                    charges = pipeline.compute_gasteiger_charges(mol)
+            except Exception:
+                pos = None
+                z = None
+
+            field_source = {"smile": "dataset"}
+            if pos is not None and z is not None:
+                field_source.update({"pos": "dataset", "z": "dataset"})
+            if charges is not None and charges.numel() == (z.shape[0] if z is not None else -1):
+                field_source["npacharge"] = "gasteiger"
+
+            yield pipeline.SmilesItem(
+                number=idx,
+                smile=smile,
+                pos=pos,
+                z=z,
+                npacharge=charges,
+                field_source=field_source,
+                source=sdf_path.name,
+            )
+
+
+def iter_pdb_dir(path: Path) -> Iterable[pipeline.SmilesItem]:
+    from rdkit import Chem
+
+    idx = 0
+    for pdb_path in sorted(path.rglob("*.pdb")):
+        idx += 1
+        mol = None
+        try:
+            mol = Chem.MolFromPDBFile(str(pdb_path), removeHs=False, sanitize=False)
+        except Exception:
+            mol = None
+        smile = pdb_path.stem
+        pos = None
+        z = None
+        charges = None
+        if mol is not None:
+            try:
+                Chem.SanitizeMol(mol)
+            except Exception:
+                pass
+            try:
+                smile = Chem.MolToSmiles(Chem.RemoveHs(mol), isomericSmiles=True)
+            except Exception:
+                smile = pdb_path.stem
+            try:
+                conf = mol.GetConformer()
+                coords = [[p.x, p.y, p.z] for p in (conf.GetAtomPosition(i) for i in range(mol.GetNumAtoms()))]
+                pos = torch.tensor(coords, dtype=torch.float32)
+                z = torch.tensor([atom.GetAtomicNum() for atom in mol.GetAtoms()], dtype=torch.long)
+                charges = pipeline.compute_gasteiger_charges(mol)
+            except Exception:
+                pos = None
+                z = None
+                charges = None
+        if pos is None or z is None:
+            try:
+                from ase.io import read as ase_read
+
+                atoms = ase_read(str(pdb_path))
+                pos = torch.tensor(atoms.positions, dtype=torch.float32)
+                z = torch.tensor(atoms.numbers, dtype=torch.long)
+            except Exception:
+                pos = None
+                z = None
+
+        field_source = {"smile": "dataset"}
+        if pos is not None and z is not None:
+            field_source.update({"pos": "dataset", "z": "dataset"})
+        if charges is not None and z is not None and charges.numel() == z.shape[0]:
+            field_source["npacharge"] = "gasteiger"
+
+        yield pipeline.SmilesItem(
+            number=idx,
+            smile=smile,
+            pos=pos,
+            z=z,
+            npacharge=charges,
+            field_source=field_source,
+            source=pdb_path.name,
+        )
+
+
+def iter_generic_db(path: Path) -> Iterable[pipeline.SmilesItem]:
+    conn = sqlite3.connect(path)
+    cur = conn.cursor()
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='molecule'")
+    has_molecule = cur.fetchone() is not None
+    conn.close()
+    if has_molecule:
+        cfg = pipeline.PipelineConfig(output_dir=Path("."), device=torch.device("cpu"), db_path=path)
+        yield from pipeline.iter_smiles(cfg)
+        return
+
+    try:
+        from ase.db import connect
+    except Exception:
+        return
+    idx = 0
+    with connect(path) as db:
+        for row in db.select():
+            idx += 1
+            atoms = row.toatoms()
+            pos = torch.tensor(atoms.positions, dtype=torch.float32)
+            z = torch.tensor(atoms.numbers, dtype=torch.long)
+            smile = row.get("unique_id") or row.get("smiles") or f"{path.stem}_{idx}"
+            field_source = {"pos": "dataset", "z": "dataset", "smile": "dataset"}
+            yield pipeline.SmilesItem(
+                number=row.id if hasattr(row, "id") else idx,
+                smile=smile,
+                pos=pos,
+                z=z,
+                field_source=field_source,
+                source=path.name,
+            )
+
+
 def build_jobs(datasets_root: Path, output_root: Path) -> list[DatasetJob]:
     jobs: list[DatasetJob] = []
     spice_hdf5 = datasets_root / "SPICE-2.0.1.hdf5"
@@ -131,7 +280,7 @@ def build_jobs(datasets_root: Path, output_root: Path) -> list[DatasetJob]:
             device=torch.device("cpu"),
             hdf5_paths=[spice_hdf5],
         )
-        jobs.append(DatasetJob("spice-2.0.1", pipeline.iter_hdf5(cfg), None, cfg.output_dir, cfg))
+        jobs.append(DatasetJob("spice-2.0.1", "hdf5", spice_hdf5, None, cfg.output_dir, cfg))
 
     spice_dir = datasets_root / "spice-dataset"
     if spice_dir.exists():
@@ -147,22 +296,33 @@ def build_jobs(datasets_root: Path, output_root: Path) -> list[DatasetJob]:
                 device=torch.device("cpu"),
                 hdf5_paths=[path],
             )
-            jobs.append(DatasetJob(f"spice/{path.name}", pipeline.iter_hdf5(cfg), None, cfg.output_dir, cfg))
+            jobs.append(DatasetJob(f"spice/{path.name}", "hdf5", path, None, cfg.output_dir, cfg))
 
     summary_csv = datasets_root / "summary.csv.gz"
     if summary_csv.exists():
         cfg = pipeline.PipelineConfig(output_dir=output_root / "summary_csv", device=torch.device("cpu"))
-        jobs.append(DatasetJob("summary_csv", iter_summary_csv(summary_csv), None, cfg.output_dir, cfg))
+        jobs.append(DatasetJob("summary_csv", "summary_csv", summary_csv, None, cfg.output_dir, cfg))
 
     des5m_csv = datasets_root / "Donchev et al. DES5M.csv"
     if des5m_csv.exists():
         cfg = pipeline.PipelineConfig(output_dir=output_root / "des5m", device=torch.device("cpu"))
-        jobs.append(DatasetJob("des5m", iter_des5m(des5m_csv), None, cfg.output_dir, cfg))
+        jobs.append(DatasetJob("des5m", "des5m", des5m_csv, None, cfg.output_dir, cfg))
 
     raman_db = datasets_root / "Raman-ChEMBL-part2.db"
     if raman_db.exists():
         cfg = pipeline.PipelineConfig(output_dir=output_root / "raman_chembl", device=torch.device("cpu"), db_path=raman_db)
-        jobs.append(DatasetJob("raman_chembl", iter_raman_db(raman_db), None, cfg.output_dir, cfg))
+        jobs.append(DatasetJob("raman_chembl", "raman_db", raman_db, None, cfg.output_dir, cfg))
+
+    raman_db2 = datasets_root / "Raman-ChEMBL-part1.db"
+    if raman_db2.exists():
+        cfg = pipeline.PipelineConfig(output_dir=output_root / "raman_chembl_part1", device=torch.device("cpu"), db_path=raman_db2)
+        jobs.append(DatasetJob("raman_chembl_part1", "raman_db", raman_db2, None, cfg.output_dir, cfg))
+
+    for db_path in sorted(datasets_root.rglob("*.db")):
+        if db_path.name.startswith("Raman-ChEMBL"):
+            continue
+        cfg = pipeline.PipelineConfig(output_dir=output_root / f"db/{db_path.stem}", device=torch.device("cpu"))
+        jobs.append(DatasetJob(f"db/{db_path.name}", "generic_db", db_path, None, cfg.output_dir, cfg))
 
     qdpi_tar = datasets_root / "QDpiDataset-main.tar.gz"
     if qdpi_tar.exists():
@@ -177,7 +337,19 @@ def build_jobs(datasets_root: Path, output_root: Path) -> list[DatasetJob]:
                 device=torch.device("cpu"),
                 hdf5_paths=[path],
             )
-            jobs.append(DatasetJob(f"qdpi/{path.name}", pipeline.iter_hdf5(cfg), None, cfg.output_dir, cfg))
+            jobs.append(DatasetJob(f"qdpi/{path.name}", "hdf5", path, None, cfg.output_dir, cfg))
+
+    sdf_dirs = sorted({p.parent for p in datasets_root.rglob("*.sdf")})
+    for sdf_dir in sdf_dirs:
+        rel = sdf_dir.relative_to(datasets_root)
+        cfg = pipeline.PipelineConfig(output_dir=output_root / "sdf" / rel, device=torch.device("cpu"))
+        jobs.append(DatasetJob(f"sdf/{rel}", "sdf_dir", sdf_dir, None, cfg.output_dir, cfg))
+
+    pdb_dirs = sorted({p.parent for p in datasets_root.rglob("*.pdb")})
+    for pdb_dir in pdb_dirs:
+        rel = pdb_dir.relative_to(datasets_root)
+        cfg = pipeline.PipelineConfig(output_dir=output_root / "pdb" / rel, device=torch.device("cpu"))
+        jobs.append(DatasetJob(f"pdb/{rel}", "pdb_dir", pdb_dir, None, cfg.output_dir, cfg))
 
     return jobs
 
@@ -226,6 +398,85 @@ def apply_cfg_overrides(cfg: pipeline.PipelineConfig, args) -> pipeline.Pipeline
     )
 
 
+def build_iterator(job: DatasetJob, cfg: pipeline.PipelineConfig) -> Iterable[pipeline.SmilesItem]:
+    if job.kind == "hdf5":
+        return pipeline.iter_hdf5(cfg)
+    if job.kind == "summary_csv":
+        return iter_summary_csv(job.path)
+    if job.kind == "des5m":
+        return iter_des5m(job.path)
+    if job.kind == "raman_db":
+        return iter_raman_db(job.path)
+    if job.kind == "generic_db":
+        return iter_generic_db(job.path)
+    if job.kind == "sdf_dir":
+        return iter_sdf_dir(job.path)
+    if job.kind == "pdb_dir":
+        return iter_pdb_dir(job.path)
+    raise ValueError(f"Unknown job kind: {job.kind}")
+
+
+def _slice_iter(items: Iterable[pipeline.SmilesItem], rank: int, world_size: int):
+    for idx, item in enumerate(items, start=1):
+        if (idx - 1) % world_size != rank:
+            continue
+        yield item
+
+
+def _run_job_worker(job: DatasetJob, args, rank: int, world_size: int) -> None:
+    if args.omp_threads is not None:
+        os.environ["OMP_NUM_THREADS"] = str(args.omp_threads)
+    if args.mkl_threads is not None:
+        os.environ["MKL_NUM_THREADS"] = str(args.mkl_threads)
+    if args.openblas_threads is not None:
+        os.environ["OPENBLAS_NUM_THREADS"] = str(args.openblas_threads)
+    if args.dp_intra_threads is not None:
+        os.environ["DP_INTRA_OP_PARALLELISM_THREADS"] = str(args.dp_intra_threads)
+    if args.dp_inter_threads is not None:
+        os.environ["DP_INTER_OP_PARALLELISM_THREADS"] = str(args.dp_inter_threads)
+    if args.dp_infer_batch_size is not None:
+        os.environ["DP_INFER_BATCH_SIZE"] = str(args.dp_infer_batch_size)
+    if args.torch_threads is not None:
+        torch.set_num_threads(args.torch_threads)
+
+    cfg = apply_cfg_overrides(job.cfg, args)
+    if world_size > 1:
+        cfg.output_dir = cfg.output_dir / f"rank_{rank:02d}"
+    cfg.distributed = world_size > 1
+    cfg.rank = rank
+    cfg.world_size = world_size
+
+    items_iter = build_iterator(job, cfg)
+    if cfg.hdf5_paths:
+        # iter_hdf5 handles distributed slicing based on cfg
+        pass
+    elif cfg.distributed:
+        items_iter = _slice_iter(items_iter, rank, world_size)
+
+    if args.limit is not None:
+        items_iter = (item for idx, item in enumerate(items_iter, start=1) if idx <= args.limit)
+
+    pipeline.run_pipeline(cfg, items_iter, job.total)
+
+
+def run_job(job: DatasetJob, args) -> None:
+    workers = max(1, args.workers)
+    if workers == 1:
+        _run_job_worker(job, args, rank=0, world_size=1)
+        return
+    ctx = mp.get_context("spawn")
+    procs = []
+    for rank in range(workers):
+        p = ctx.Process(target=_run_job_worker, args=(job, args, rank, workers))
+        p.start()
+        procs.append(p)
+    for p in procs:
+        p.join()
+    failures = [p.exitcode for p in procs if p.exitcode not in (0, None)]
+    if failures:
+        raise RuntimeError(f"Job {job.name} failed with exit codes {failures}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Process all datasets under Datasets/ into PyG shards.")
     parser.add_argument("--datasets-root", type=str, default="Datasets")
@@ -263,6 +514,17 @@ def main() -> None:
     parser.add_argument("--rdkit-max-attempts", type=int, default=10)
     parser.add_argument("--rdkit-no-opt", action="store_true")
     parser.add_argument("--shard-size", type=int, default=128)
+    parser.add_argument("--workers", type=int, default=max(1, os.cpu_count() // 2))
+    parser.add_argument("--job-index", type=int, default=0)
+    parser.add_argument("--job-count", type=int, default=1)
+    parser.add_argument("--omp-threads", type=int, default=None)
+    parser.add_argument("--mkl-threads", type=int, default=None)
+    parser.add_argument("--openblas-threads", type=int, default=None)
+    parser.add_argument("--torch-threads", type=int, default=None)
+    parser.add_argument("--torch-interop-threads", type=int, default=None)
+    parser.add_argument("--dp-intra-threads", type=int, default=None)
+    parser.add_argument("--dp-inter-threads", type=int, default=None)
+    parser.add_argument("--dp-infer-batch-size", type=int, default=None)
     args = parser.parse_args()
 
     device = torch.device(args.device) if args.device else torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -284,18 +546,21 @@ def main() -> None:
     output_root = Path(args.output_root)
     output_root.mkdir(parents=True, exist_ok=True)
 
-    for job in build_jobs(datasets_root, output_root):
-        cfg = apply_cfg_overrides(job.cfg, args)
-        if cfg.hdf5_paths:
-            job_iter = pipeline.iter_hdf5(cfg)
-        elif cfg.db_path:
-            job_iter = pipeline.iter_smiles(cfg)
-        else:
-            job_iter = job.iterator
-        if args.limit is not None:
-            job_iter = (item for idx, item in enumerate(job_iter, start=1) if idx <= args.limit)
-        print(f"==> Processing {job.name} -> {job.output_dir}")
-        pipeline.run_pipeline(cfg, job_iter, job.total)
+    jobs = build_jobs(datasets_root, output_root)
+    if args.job_count < 1:
+        raise ValueError("--job-count must be >= 1")
+    if args.job_index < 0 or args.job_index >= args.job_count:
+        raise ValueError("--job-index must be in [0, job-count)")
+    if args.job_count > 1:
+        jobs = [job for idx, job in enumerate(jobs) if idx % args.job_count == args.job_index]
+
+    total_jobs = len(jobs)
+    for job_idx, job in enumerate(jobs, start=1):
+        tag = f"[job {job_idx}/{total_jobs}]"
+        if args.job_count > 1:
+            tag = f"[job {job_idx}/{total_jobs} | shard {args.job_index}/{args.job_count}]"
+        print(f"{tag} Processing {job.name} -> {job.output_dir}")
+        run_job(job, args)
 
 
 if __name__ == "__main__":

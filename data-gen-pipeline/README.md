@@ -91,9 +91,26 @@ python data-gen-pipeline/process_datasets.py \
   --deepmd-pot-model data-gen-pipeline/checkpoints/DPA2-Drug-v1.pth \
   --deepmd-head Domains_Drug \
   --shard-size 256 \
+  --workers 4 \
+  --omp-threads 4 \
+  --torch-threads 4 \
   --allow-missing-polar \
   --allow-missing-dipole \
   --allow-missing-hyperpolar
+```
+
+Scale across EC2 instances by splitting the job list:
+
+```
+# On 10 instances, set JOB_INDEX=0..9
+python data-gen-pipeline/process_datasets.py \
+  --datasets-root /mnt/fsx/Datasets \
+  --output-root /mnt/fsx/processed \
+  --deepmd-pot-model /mnt/fsx/checkpoints/DPA2-Drug-v1.pth \
+  --no-psi4 \
+  --workers 4 \
+  --job-index $JOB_INDEX \
+  --job-count 10
 ```
 
 The runner supports SPICE HDF5, summary.csv.gz, DES5M (dimer) CSV, and Raman-ChEMBL SQLite DBs.
