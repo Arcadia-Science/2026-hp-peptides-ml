@@ -16,6 +16,7 @@ from psi4_backend import Psi4HessianBackend
 _DATASET = None
 _CFG = None
 _BACKENDS = None
+_GROUND_TRUTH_ONLY = True
 
 
 def _init_worker(
@@ -25,8 +26,9 @@ def _init_worker(
     dipole_model: Optional[str],
     polar_model: Optional[str],
     use_psi4: bool,
+    ground_truth_only: bool,
 ) -> None:
-    global _DATASET, _CFG, _BACKENDS
+    global _DATASET, _CFG, _BACKENDS, _GROUND_TRUTH_ONLY
     os.environ.setdefault("OMP_NUM_THREADS", "1")
     os.environ.setdefault("MKL_NUM_THREADS", "1")
     os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
@@ -67,6 +69,7 @@ def _init_worker(
             psi4_backend = None
 
     _BACKENDS = (dipole_backend, polar_backend, hessian_backend, psi4_backend)
+    _GROUND_TRUTH_ONLY = ground_truth_only
 
 
 def _compute_one(idx: int):
@@ -98,6 +101,30 @@ def _compute_one(idx: int):
     local_errors = defaultdict(list)
     shape_errors = defaultdict(int)
 
+    dataset_sources = {
+        "dataset",
+        "db",
+        "summary_csv",
+        "des5m_energy",
+        "formation_energy",
+        "dft_total_energy",
+        "scf_dipole",
+        "scf_quadrupole",
+        "mbis_charges",
+        "mbis_dipole_sum",
+        "mbis_octupoles_sum",
+        "qm7x_ePBE0+MBD",
+        "qm7x_ePBE0",
+        "qm7x_eAT",
+        "qm7x_eDFTB+MBD",
+        "qm7x_dipole",
+        "qm7x_polar",
+        "qm7x_charge",
+    }
+
+    field_source = getattr(d, "field_source", {}) or {}
+    field_generated = getattr(d, "field_generated", {}) or {}
+
     for key in d.keys():
         if key in (
             "smile",
@@ -112,6 +139,13 @@ def _compute_one(idx: int):
             "conformer_id",
         ):
             continue
+        if _GROUND_TRUTH_ONLY:
+            src = field_source.get(key)
+            if src not in dataset_sources:
+                # Skip model/heuristic-generated fields when comparing to ground truth.
+                continue
+            if field_generated.get(key, False):
+                continue
         if not hasattr(pred, key):
             shape_errors[key] += 1
             continue
@@ -175,6 +209,7 @@ def run_validation(
     max_workers: int = 4,
     use_psi4: bool = False,
     show_progress: bool = True,
+    ground_truth_only: bool = True,
 ):
     error_dict: dict[str, list[float]] = defaultdict(list)
     shape_error = 0
@@ -194,6 +229,7 @@ def run_validation(
             str(dipole_model) if dipole_model else None,
             str(polar_model) if polar_model else None,
             use_psi4,
+            ground_truth_only,
         ),
     ) as ex:
         futures = [ex.submit(_compute_one, int(i)) for i in indices]

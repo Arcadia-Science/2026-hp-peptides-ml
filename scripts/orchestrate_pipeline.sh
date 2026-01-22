@@ -11,7 +11,9 @@ fi
 source "$ENV_FILE"
 
 export REPO_DIR PYTHON_BIN DATASETS_ROOT OUTPUT_ROOT CHECKPOINT_PATH
-export WORKERS OMP_THREADS MKL_THREADS OPENBLAS_THREADS TORCH_THREADS DP_INTRA_THREADS DP_INTER_THREADS
+export DEEPMD_DIPOLE_MODEL DEEPMD_POLAR_MODEL DEEPMD_HEAD DEEPMD_TYPE_MAP
+export WORKERS OMP_THREADS MKL_THREADS OPENBLAS_THREADS TORCH_THREADS TORCH_INTEROP_THREADS
+export DP_INTRA_THREADS DP_INTER_THREADS
 export SHARD_SIZE SAVE_DEVICE NO_PSI4
 export JOB_INDEX JOB_COUNT
 
@@ -35,16 +37,31 @@ cmd=(
   --mkl-threads "$MKL_THREADS"
   --openblas-threads "$OPENBLAS_THREADS"
   --torch-threads "$TORCH_THREADS"
+  --torch-interop-threads "${TORCH_INTEROP_THREADS:-1}"
   --dp-intra-threads "$DP_INTRA_THREADS"
   --dp-inter-threads "$DP_INTER_THREADS"
   --shard-size "$SHARD_SIZE"
   --save-device "$SAVE_DEVICE"
-  --job-index "$JOB_INDEX"
-  --job-count "$JOB_COUNT"
   --allow-missing-dipole
   --allow-missing-polar
   --allow-missing-hyperpolar
 )
+
+if [[ -n "${DEEPMD_DIPOLE_MODEL:-}" ]]; then
+  cmd+=(--deepmd-dipole-model "$DEEPMD_DIPOLE_MODEL")
+fi
+if [[ -n "${DEEPMD_POLAR_MODEL:-}" ]]; then
+  cmd+=(--deepmd-polar-model "$DEEPMD_POLAR_MODEL")
+fi
+if [[ -n "${DEEPMD_HEAD:-}" ]]; then
+  cmd+=(--deepmd-head "$DEEPMD_HEAD")
+fi
+if [[ -n "${DEEPMD_TYPE_MAP:-}" ]]; then
+  cmd+=(--deepmd-type-map "$DEEPMD_TYPE_MAP")
+fi
+if [[ -n "${JOB_INDEX:-}" && -n "${JOB_COUNT:-}" ]]; then
+  cmd+=(--job-index "$JOB_INDEX" --job-count "$JOB_COUNT")
+fi
 
 if [[ "$NO_PSI4" == "1" ]]; then
   cmd+=(--no-psi4)

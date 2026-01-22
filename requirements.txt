@@ -1,3 +1,4 @@
+-f https://data.pyg.org/whl/torch-2.8.0+cpu.html
 aiohappyeyeballs==2.6.1
 aiohttp==3.13.3
 aiosignal==1.4.0
@@ -95,9 +96,9 @@ pyarrow==22.0.0
 pycparser==2.23
 pydantic==2.12.5
 pydantic_core==2.41.5
-pyg_lib==0.5.0+pt28; platform_system == "Darwin"
-pyg_lib==0.5.0+pt28cpu; platform_system == "Linux" and platform_machine == "x86_64"
-pyg_lib==0.5.0+pt28cpu; platform_system == "Windows" and platform_machine == "AMD64"
+pyg_lib==0.5.0; platform_system == "Darwin"
+pyg_lib==0.5.0; platform_system == "Linux" and platform_machine == "x86_64"
+pyg_lib==0.5.0; platform_system == "Windows" and platform_machine == "AMD64"
 Pygments==2.19.2
 pyparsing==3.3.1
 pytest==9.0.2

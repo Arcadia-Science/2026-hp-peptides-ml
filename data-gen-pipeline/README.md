@@ -81,6 +81,18 @@ Each Data object includes provenance tags:
 - `field_imputed`: dict of field -> bool (true if imputed by ML/heuristics)
 - `field_confidence`: dict of field -> float in [0, 1] (method-based confidence by source)
 
+## QM7-X HDF5 datasets
+QM7-X is supported when the HDF5 files are present under `Datasets/datasets--qm7x/`.
+Fields are mapped as follows:
+- `atNUM` -> `z`, `atXYZ` -> `pos`
+- `vDIP` -> `dipole` (converted from e·Å to Debye)
+- `mTPOL` -> `polar` (bohr^3 tensor)
+- `hCHG` -> `npacharge`
+- Energy is taken from `ePBE0+MBD` (fallback `ePBE0`, `eAT`, `eDFTB+MBD`)
+
+If the datalad dataset is present but the HDF5 files are missing, run the download script:
+`Datasets/datasets--qm7x/scripts/download.sh`
+
 ## Process all local datasets
 Use the dataset runner to scan `Datasets/` and emit sharded outputs for each dataset:
 
@@ -114,6 +126,7 @@ python data-gen-pipeline/process_datasets.py \
 ```
 
 The runner supports SPICE HDF5, summary.csv.gz, DES5M (dimer) CSV, and Raman-ChEMBL SQLite DBs.
+It also supports QM7-X HDF5 when those files are present under `Datasets/datasets--qm7x/`.
 
 ## Build a SQLite index
 After generating shards, index them for fast retrieval:
@@ -125,4 +138,27 @@ python data-gen-pipeline/index_shards.py \
   --dataset-name spice \
   --dataset-version v1 \
   --dataset-source local
+```
+
+## Build a global SQLite index (all datasets)
+Create one DB that references all shard directories under an output root:
+
+```
+python data-gen-pipeline/index_shards_multi.py \
+  --shards-root data/processed \
+  --output-db data/processed/global_index.sqlite \
+  --dataset-version v1 \
+  --dataset-source local \
+  --s3-prefix s3://<bucket>/processed
+```
+
+## Evaluate checkpoints (energy/dipole/polar)
+Use a small HDF5 sample to compare DeepMD checkpoints:
+
+```
+python data-gen-pipeline/eval_checkpoints.py \
+  --hdf5-path Datasets/SPICE-2.0.1.hdf5 \
+  --checkpoints-dir data-gen-pipeline/checkpoints \
+  --type-map "H,C,N,O,S,P,F,Cl,Br,I" \
+  --limit 200
 ```

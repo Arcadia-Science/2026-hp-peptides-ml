@@ -75,6 +75,87 @@ def iter_summary_csv(path: Path) -> Iterable[pipeline.SmilesItem]:
             )
 
 
+def iter_qm7x_hdf5(path: Path) -> Iterable[pipeline.SmilesItem]:
+    try:
+        import h5py
+    except Exception as exc:
+        raise RuntimeError("h5py is required for QM7-X datasets.") from exc
+
+    index = 0
+    with h5py.File(path, "r") as handle:
+        for mol_key in handle.keys():
+            mol_group = handle[mol_key]
+            for conf_key in mol_group.keys():
+                conf = mol_group[conf_key]
+
+                if "atNUM" not in conf or "atXYZ" not in conf:
+                    continue
+                z = torch.tensor(conf["atNUM"][()], dtype=torch.long)
+                pos = torch.tensor(conf["atXYZ"][()], dtype=torch.float32)
+
+                energy = None
+                energy_source = None
+                for key in ("ePBE0+MBD", "ePBE0", "eAT", "eDFTB+MBD"):
+                    if key in conf:
+                        try:
+                            energy_val = float(conf[key][()])
+                        except Exception:
+                            energy_val = None
+                        if energy_val is not None:
+                            energy = torch.tensor([[energy_val]], dtype=torch.float32)
+                            energy_source = f"qm7x_{key}"
+                            break
+
+                dipole = None
+                if "vDIP" in conf:
+                    try:
+                        dipole = torch.tensor(conf["vDIP"][()], dtype=torch.float32).view(1, 3)
+                        dipole = dipole * pipeline.E_ANGSTROM_TO_DEBYE
+                    except Exception:
+                        dipole = None
+
+                polar = None
+                if "mTPOL" in conf:
+                    try:
+                        pol = torch.tensor(conf["mTPOL"][()], dtype=torch.float32).reshape(-1)
+                        if pol.numel() == 9:
+                            polar = pol.view(3, 3).unsqueeze(0)
+                    except Exception:
+                        polar = None
+
+                charges = None
+                if "hCHG" in conf:
+                    try:
+                        charges = torch.tensor(conf["hCHG"][()], dtype=torch.float32)
+                    except Exception:
+                        charges = None
+
+                index += 1
+                field_source = {"pos": "dataset", "z": "dataset", "smile": "dataset"}
+                if energy is not None:
+                    field_source["energy"] = energy_source or "qm7x_energy"
+                if dipole is not None:
+                    field_source["dipole"] = "qm7x_dipole"
+                if polar is not None:
+                    field_source["polar"] = "qm7x_polar"
+                if charges is not None and charges.numel() == z.shape[0]:
+                    field_source["npacharge"] = "qm7x_charge"
+
+                yield pipeline.SmilesItem(
+                    number=index,
+                    smile=str(mol_key),
+                    pos=pos,
+                    z=z,
+                    energy=energy,
+                    dipole=dipole,
+                    polar=polar,
+                    npacharge=charges,
+                    field_source=field_source,
+                    source=path.name,
+                    mol_key=str(mol_key),
+                )
+
+
 def iter_des5m(path: Path) -> Iterable[pipeline.SmilesItem]:
     with path.open("r", newline="") as handle:
         reader = csv.DictReader(handle)
@@ -273,6 +354,21 @@ def iter_generic_db(path: Path) -> Iterable[pipeline.SmilesItem]:
 
 def build_jobs(datasets_root: Path, output_root: Path) -> list[DatasetJob]:
     jobs: list[DatasetJob] = []
+    qm7x_root = datasets_root / "datasets--qm7x"
+    qm7x_paths: list[Path] = []
+    if qm7x_root.exists():
+        qm7x_paths = sorted(qm7x_root.rglob("*.hdf5")) + sorted(qm7x_root.rglob("*.h5"))
+        for path in qm7x_paths:
+            cfg = pipeline.PipelineConfig(
+                output_dir=output_root / f"qm7x/{path.stem}",
+                device=torch.device("cpu"),
+            )
+            jobs.append(DatasetJob(f"qm7x/{path.name}", "qm7x_hdf5", path, None, cfg.output_dir, cfg))
+        if not qm7x_paths:
+            print(
+                "QM7-X dataset detected but no HDF5 files found. "
+                "Run Datasets/datasets--qm7x/scripts/download.sh or datalad get to fetch data."
+            )
     spice_hdf5 = datasets_root / "SPICE-2.0.1.hdf5"
     if spice_hdf5.exists():
         cfg = pipeline.PipelineConfig(
@@ -399,6 +495,8 @@ def apply_cfg_overrides(cfg: pipeline.PipelineConfig, args) -> pipeline.Pipeline
 
 
 def build_iterator(job: DatasetJob, cfg: pipeline.PipelineConfig) -> Iterable[pipeline.SmilesItem]:
+    if job.kind == "qm7x_hdf5":
+        return iter_qm7x_hdf5(job.path)
     if job.kind == "hdf5":
         return pipeline.iter_hdf5(cfg)
     if job.kind == "summary_csv":
@@ -438,6 +536,8 @@ def _run_job_worker(job: DatasetJob, args, rank: int, world_size: int) -> None:
         os.environ["DP_INFER_BATCH_SIZE"] = str(args.dp_infer_batch_size)
     if args.torch_threads is not None:
         torch.set_num_threads(args.torch_threads)
+    if args.torch_interop_threads is not None:
+        torch.set_num_interop_threads(args.torch_interop_threads)
 
     cfg = apply_cfg_overrides(job.cfg, args)
     if world_size > 1:

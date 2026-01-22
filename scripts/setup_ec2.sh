@@ -17,7 +17,7 @@ else
 fi
 
 sudo "$PKG" -y update
-sudo "$PKG" -y install git curl gcc gcc-c++ make cmake unzip tar gzip
+sudo "$PKG" -y install git curl wget gcc gcc-c++ make cmake unzip tar gzip xz
 
 # Install Lustre client
 if [[ "$PKG" == "dnf" ]]; then

@@ -14,6 +14,10 @@ MOUNT_POINT="/mnt/fsx"
 DATASETS_ROOT="$MOUNT_POINT/Datasets"
 OUTPUT_ROOT="$MOUNT_POINT/processed_all"
 CHECKPOINT_PATH="$MOUNT_POINT/checkpoints/DPA2-Drug-v1.pth"
+DEEPMD_DIPOLE_MODEL=""
+DEEPMD_POLAR_MODEL=""
+DEEPMD_HEAD=""
+DEEPMD_TYPE_MAP="H,C,N,O,S,P,F,Cl,Br,I"
 
 # Pipeline parallelism
 WORKERS=10
@@ -21,9 +25,12 @@ OMP_THREADS=8
 MKL_THREADS=8
 OPENBLAS_THREADS=8
 TORCH_THREADS=8
+TORCH_INTEROP_THREADS=1
 DP_INTRA_THREADS=8
 DP_INTER_THREADS=8
 SHARD_SIZE=256
+SAVE_DEVICE="cpu"
+NO_PSI4=1
 
 # Two-machine split (set JOB_INDEX=0 on first, 1 on second)
 JOB_INDEX=0
@@ -37,4 +44,5 @@ CW_LOG_STREAM=""  # empty -> use instance-id
 # S3 sync
 S3_BUCKET="molecule-dft-imputed"
 S3_PREFIX="processed_all"
+GLOBAL_INDEX_DB="$MOUNT_POINT/processed_all/global_index.sqlite"
 SYNC_INTERVAL=900
