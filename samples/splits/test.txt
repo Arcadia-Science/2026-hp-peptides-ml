@@ -1,0 +1,4 @@
+samples/shard_000013.pt	6	402	13
+samples/shard_000013.pt	7	402	13
+samples/shard_000013.pt	16	405	17
+samples/shard_000013.pt	17	405	17

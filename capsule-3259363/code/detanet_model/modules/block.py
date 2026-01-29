@@ -11,13 +11,14 @@ class Interaction_Block(nn.Module):
                  num_radial,
                  irreps_sh,
                  irreps_T,
-                 dropout
+                 dropout,
+                 e3nn=None
                  ):
         super(Interaction_Block,self).__init__()
         self.message=Message(head=head,num_radial=num_radial,act=act,
-                             num_features=num_features,irreps_sh=irreps_sh)
+                             num_features=num_features,irreps_sh=irreps_sh,e3nn=e3nn)
         self.update=Update(num_features=num_features,act=act,irreps_mout=self.message.tp.irreps_out,
-                           irreps_T=irreps_T,dropout=dropout)
+                           irreps_T=irreps_T,dropout=dropout,e3nn=e3nn)
 
     def forward(self,S,T,rbf,sh,index):
         mijt,mijs=self.message(S=S,rbf=rbf,sh=sh,index=index)

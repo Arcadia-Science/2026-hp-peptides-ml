@@ -1,14 +1,17 @@
-from e3nn import o3
 from .acts import activations
 from torch_scatter import scatter
 from torch import nn
 import torch
+from ..e3nn_backend import load_e3nn
 
 
 
 class Tensorproduct_Attention(nn.Module):
-    def __init__(self,num_features,irreps_T,act,):
+    def __init__(self,num_features,irreps_T,act,e3nn=None):
         super(Tensorproduct_Attention, self).__init__()
+        if e3nn is None:
+            e3nn = load_e3nn()
+        o3 = e3nn.o3
         self.feature=num_features
         self.lq=o3.Linear(irreps_T,irreps_T, internal_weights=True,shared_weights=True)
         self.lk=o3.Linear(irreps_T,irreps_T, internal_weights=True,shared_weights=True)
@@ -49,15 +52,18 @@ class Tensorproduct_Attention(nn.Module):
         return tu,su*self.actlvs(self.lvs(S))
 
 class Update(nn.Module):
-    def __init__(self,num_features,act,irreps_mout,irreps_T,dropout=0.0):
+    def __init__(self,num_features,act,irreps_mout,irreps_T,dropout=0.0,e3nn=None):
         super(Update, self).__init__()
+        if e3nn is None:
+            e3nn = load_e3nn()
+        o3 = e3nn.o3
         self.actu=activations(act,num_features=num_features)
         self.drop=nn.Dropout(dropout)
         self.outt = o3.Linear(irreps_in=irreps_mout, irreps_out=irreps_T, internal_weights=True,
                                 shared_weights=True)
         self.outs=nn.Linear(num_features,num_features)
 
-        self.uattn=Tensorproduct_Attention(num_features=num_features,irreps_T=irreps_T,act=act)
+        self.uattn=Tensorproduct_Attention(num_features=num_features,irreps_T=irreps_T,act=act,e3nn=e3nn)
         self.reset_parameters()
 
     def reset_parameters(self):

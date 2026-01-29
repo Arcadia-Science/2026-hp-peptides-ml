@@ -1,11 +1,14 @@
+from __future__ import annotations
+
 import torch
-from e3nn import o3,io
 from torch import nn,FloatTensor
 from .constant import atom_masses
 from torch_geometric.nn import radius_graph
 from .modules import Interaction_Block,Embedding,Radial_Basis,MLP,Equivariant_Multilayer
 from torch.autograd import grad
 from torch_scatter import scatter
+from .e3nn_backend import load_e3nn
+from .adapters import apply_adalora, collect_adalora_targets
 """Deep equivariant tensor attention Network(DetaNet) graph neural network model"""
 
 '''Irreducible Representations(irreps) of vectorial and tensorial feature
@@ -42,12 +45,18 @@ class DetaNet(nn.Module):
                  atom_ref:FloatTensor=None,
                  scale:float=1.0,
                  scalar_outsize:int=1,
-                 irreps_out:str or o3.Irreps=None,
+                 irreps_out:str=None,
                  summation:bool=True,
                  norm:bool=False,
                  out_type:str='scalar',
                  grad_type:str=None,
-                 device:torch.device=torch.device('cuda')):
+                 device:torch.device=torch.device('cuda'),
+                 elora_path:str=None,
+                 adalora_config:dict=None,
+                 adalora_targets:list=None,
+                 adalora_scalar_heads:bool=True,
+                 adalora_attention:bool=True,
+                 adapter_freeze_base:bool=True):
         """Parameter introduction
     num_features:The dimension of the scalar feature and irreps feature(each order m), set to 128 by default.
 
@@ -115,9 +124,19 @@ class DetaNet(nn.Module):
     For these 2 derivative properties, out_type must be 'dipole','2_tensor' respectively.
 
     device: device type, either torch.device('cuda') represents gpu or torch.device('cpu')  represents cpu
+    elora_path: optional path to an ELoRA repo to enable LoRA on equivariant o3.Linear/TensorProduct layers.
+      Use "vendored" to load third_party/ELoRA when present.
+    adalora_config: dict or AdaLoraConfig to inject AdaLoRA on scalar/attention linears.
+    adalora_targets: optional list of module names to target for AdaLoRA.
+    adalora_scalar_heads: include scalar heads in default AdaLoRA target list.
+    adalora_attention: include attention projections in default AdaLoRA target list.
+    adapter_freeze_base: freeze non-LoRA parameters when adapters are enabled.
         """
         super(DetaNet,self).__init__()
         assert num_features%attention_head==0,'attention head must be divisible by the number of features'
+        self._e3nn = load_e3nn(elora_path=elora_path)
+        self.o3 = self._e3nn.o3
+        self.io = self._e3nn.io
         self.scale=scale
         self.ref=atom_ref
         self.norm=norm
@@ -127,6 +146,7 @@ class DetaNet(nn.Module):
         self.rc=rc
         self.grad=grad_type
         # Generate the representation of irrep features.
+        o3 = self.o3
         irreps_T = o3.Irreps((num_features, (l, (-1) ** l)) for l in range(1, maxl + 1))
         self.vdim = o3.Irreps(irreps_T).dim
         self.features=num_features
@@ -147,7 +167,8 @@ class DetaNet(nn.Module):
                         num_radial=num_radial,
                         irreps_sh=self.irreps_sh,
                         irreps_T=irreps_T,
-                        dropout=dropout
+                        dropout=dropout,
+                        e3nn=self._e3nn
                         )
             blocks.append(block)
         self.blocks=nn.Sequential(*blocks)
@@ -157,22 +178,42 @@ class DetaNet(nn.Module):
             for _, (l, p) in o3.Irreps(irreps_out):
                 mid.append((num_features, (l, p)))
             irreps_mid = o3.Irreps(mid)
-            self.tout=Equivariant_Multilayer(irreps_list=[irreps_T,irreps_mid,irreps_out],act=act)
+            self.tout=Equivariant_Multilayer(
+                irreps_list=[irreps_T,irreps_mid,irreps_out],act=act,e3nn=self._e3nn
+            )
         if scalar_outsize !=0:
             self.sout=MLP(size=(num_features,num_features,scalar_outsize),act=act,dropout=dropout)
 
         self.mass=atom_masses.to(device)
         #Module for conversion from irrep tensor to Cartesian tensor
         if out_type == '2_tensor':
-            self.ct = io.CartesianTensor('ij=ji')
+            self.ct = self.io.CartesianTensor('ij=ji')
 
         elif out_type == '3_tensor':
-            self.ct = io.CartesianTensor("ijk=jik=ikj")
+            self.ct = self.io.CartesianTensor("ijk=jik=ikj")
 
         #Taking 6 matrix elements of the polarizability tensor (3x3) (9 of which 3 are symmetric, so there are 6).
         # Used to reduce calculation cost when calculating the derivative of polarizability
         if self.grad=='polar':
             self.mask=torch.tril(torch.ones(size=(3,3)),diagonal=0).flatten()
+
+        if adalora_config is not None:
+            if adalora_targets is None:
+                adalora_targets = collect_adalora_targets(
+                    self,
+                    include_scalar_heads=adalora_scalar_heads,
+                    include_attention=adalora_attention,
+                )
+            apply_adalora(
+                self,
+                adalora_config,
+                target_modules=adalora_targets,
+                freeze_base=adapter_freeze_base,
+            )
+        elif adapter_freeze_base and elora_path is not None:
+            for name, param in self.named_parameters():
+                if "lora" not in name.lower():
+                    param.requires_grad = False
 
     def centroid_coordinate(self, z, pos, batch):
         '''Calculate the centre-of-mass coordinates of each atom.'''
@@ -204,7 +245,7 @@ class DetaNet(nn.Module):
         '''
         sa,sb=torch.split(outs,dim=-1,split_size_or_sections=[1,1])
         ra=self.centroid_coordinate(z=z,pos=pos,batch=batch)
-        ta=o3.spherical_harmonics(l=self.irreps_out,x=ra,normalize=False)*sa
+        ta=self.o3.spherical_harmonics(l=self.irreps_out,x=ra,normalize=False)*sa
         return self.ct.to_cartesian(torch.concat(tensors=(sb,outt+ta),dim=-1))
 
     def cal_R_sq(self,z,pos,batch,outs):
@@ -225,8 +266,8 @@ class DetaNet(nn.Module):
         '''
         sa, sb = torch.split(outs, dim=-1, split_size_or_sections=[1, 1])
         ra=self.centroid_coordinate(z=z,pos=pos,batch=batch)
-        ta=o3.spherical_harmonics(l='1o',x=ra,normalize=False)*sa
-        tb=o3.spherical_harmonics(l='3o',x=ra,normalize=False)*sb
+        ta=self.o3.spherical_harmonics(l='1o',x=ra,normalize=False)*sa
+        tb=self.o3.spherical_harmonics(l='3o',x=ra,normalize=False)*sb
         return self.ct.to_cartesian(outt+torch.concat(tensors=(ta,tb),dim=-1))
 
     def grad_hess_ij(self, energy, posj, posi, create_graph=True):
@@ -327,7 +368,7 @@ class DetaNet(nn.Module):
         r=torch.norm(rij,dim=-1)
 
         #Generation of the irrep tensor from the normalised coordinate vector via the spherical harmonic function
-        sh = o3.spherical_harmonics(l=self.irreps_sh, x=rij/(r.view(-1,1)), normalize=True, normalization="component")
+        sh = self.o3.spherical_harmonics(l=self.irreps_sh, x=rij/(r.view(-1,1)), normalize=True, normalization="component")
         #Radial basis are generated from distances.
         rbf = self.Radial(r)
 
@@ -398,6 +439,3 @@ class DetaNet(nn.Module):
         if self.scale is not None:
             out=out*self.scale
         return out
-
-
-

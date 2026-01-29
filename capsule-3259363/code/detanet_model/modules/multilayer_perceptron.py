@@ -1,7 +1,6 @@
 from torch import nn
-from e3nn import o3
-from e3nn.nn import Activation
 from .acts import activations
+from ..e3nn_backend import load_e3nn
 class MLP(nn.Module):
     '''Invariant MLP, which can only act on scalar features'''
     def __init__(self,size,act,bias=True,last_act=False,dropout=0.0):
@@ -33,8 +32,12 @@ class MLP(nn.Module):
 
 class Equivariant_Multilayer(nn.Module):
     '''Equivariant MLP, which can only act on all features'''
-    def __init__(self,irreps_list,act,last_act=False):
+    def __init__(self,irreps_list,act,last_act=False,e3nn=None):
         super(Equivariant_Multilayer, self).__init__()
+        if e3nn is None:
+            e3nn = load_e3nn()
+        o3 = e3nn.o3
+        Activation = e3nn.nn.Activation
         e_mlp=[]
         for ei in range(0,len(irreps_list)-1):
             acts = []

@@ -1,12 +1,15 @@
-from e3nn import o3
 import torch
 from torch import nn
 from .edge_attention import Edge_Attention
+from ..e3nn_backend import load_e3nn
 
 class Message(nn.Module):
     '''Message Module'''
-    def __init__(self,head,num_radial,num_features,irreps_sh,act):
+    def __init__(self,head,num_radial,num_features,irreps_sh,act,e3nn=None):
         super(Message,self).__init__()
+        if e3nn is None:
+            e3nn = load_e3nn()
+        o3 = e3nn.o3
         self.feature=num_features
         self.Attention=Edge_Attention(head=head,num_radial=num_radial,num_features=num_features,act=act)
         irreps_mout = []
