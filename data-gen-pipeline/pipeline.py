@@ -1,5 +1,6 @@
 import argparse
 import hashlib
+import itertools
 import json
 import os
 import sqlite3
@@ -128,6 +129,7 @@ class PipelineConfig:
     allow_missing_polar: bool = False
     allow_missing_dipole: bool = False
     shard_size: Optional[int] = None
+    resume: bool = False
 
 
 @dataclass
@@ -1121,13 +1123,13 @@ def write_data(data: Data, cfg: PipelineConfig, manifest) -> None:
 
 
 class ShardWriter:
-    def __init__(self, cfg: PipelineConfig, manifest) -> None:
+    def __init__(self, cfg: PipelineConfig, manifest, start_idx: int = 0) -> None:
         if cfg.shard_size is None or cfg.shard_size <= 0:
             raise ValueError("shard_size must be a positive integer.")
         self.cfg = cfg
         self.manifest = manifest
         self.buffer: list[Data] = []
-        self.shard_idx = 0
+        self.shard_idx = start_idx
 
     def add(self, data: Data) -> None:
         if self.cfg.save_device is not None:
@@ -1213,15 +1215,42 @@ def run_pipeline(cfg: PipelineConfig, items_iter: Iterable[SmilesItem], total: O
 
     manifest_path = cfg.output_dir / "manifest.jsonl"
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
-    with manifest_path.open("w", encoding="utf-8") as manifest:
-        shard_writer = ShardWriter(cfg, manifest) if cfg.shard_size else None
-        processed = 0
+
+    resume_count = 0
+    resume_shard_idx = 0
+    manifest_mode = "w"
+    if cfg.resume and manifest_path.exists():
+        manifest_mode = "a"
+        try:
+            with manifest_path.open("r", encoding="utf-8") as resume_manifest:
+                for line in resume_manifest:
+                    try:
+                        rec = json.loads(line)
+                    except Exception:
+                        continue
+                    if "count" in rec:
+                        count = rec.get("count") or 0
+                        resume_count += int(count)
+                        resume_shard_idx += 1
+                    else:
+                        resume_count += 1
+        except Exception:
+            resume_count = 0
+            resume_shard_idx = 0
+            manifest_mode = "w"
+
+        if resume_count:
+            items_iter = itertools.islice(items_iter, resume_count, None)
+
+    with manifest_path.open(manifest_mode, encoding="utf-8") as manifest:
+        shard_writer = ShardWriter(cfg, manifest, start_idx=resume_shard_idx) if cfg.shard_size else None
+        processed = resume_count
         iterator = items_iter
         if total is not None:
             try:
                 from tqdm import tqdm
 
-                iterator = tqdm(items_iter, total=total, desc="generate")
+                iterator = tqdm(items_iter, total=total, desc="generate", initial=resume_count)
             except Exception:
                 iterator = items_iter
         for item in iterator:

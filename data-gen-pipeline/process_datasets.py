@@ -491,6 +491,7 @@ def apply_cfg_overrides(cfg: pipeline.PipelineConfig, args) -> pipeline.Pipeline
         allow_missing_polar=args.allow_missing_polar,
         allow_missing_dipole=args.allow_missing_dipole,
         shard_size=args.shard_size,
+        resume=args.resume,
     )
 
 
@@ -615,6 +616,7 @@ def main() -> None:
     parser.add_argument("--rdkit-max-attempts", type=int, default=10)
     parser.add_argument("--rdkit-no-opt", action="store_true")
     parser.add_argument("--shard-size", type=int, default=128)
+    parser.add_argument("--resume", action="store_true")
     parser.add_argument("--workers", type=int, default=max(1, os.cpu_count() // 2))
     parser.add_argument("--job-index", type=int, default=0)
     parser.add_argument("--job-count", type=int, default=1)
