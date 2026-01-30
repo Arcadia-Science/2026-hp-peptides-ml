@@ -2,13 +2,15 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import random
+import csv
+import subprocess
+import time
 from pathlib import Path
 from typing import Iterable, List, Optional
-
-import json
 
 import torch
 import torch.distributed as dist
@@ -24,6 +26,26 @@ if str(MODEL_ROOT) not in os.sys.path:
 from detanet_model.detanet import DetaNet
 from detanet_model.model_loader import BASE_MODEL_CONFIG, TASK_CONFIGS
 
+METRICS_HEADER = [
+    "epoch",
+    "step",
+    "split",
+    "loss",
+    "lr",
+    "val_mse",
+    "val_mse_lo",
+    "val_mse_hi",
+    "val_mae",
+    "val_mae_lo",
+    "val_mae_hi",
+    "test_mse",
+    "test_mse_lo",
+    "test_mse_hi",
+    "test_mae",
+    "test_mae_lo",
+    "test_mae_hi",
+]
+
 
 def _list_shards(shard_dir: Optional[str], list_file: Optional[str]) -> List[str]:
     if list_file:
@@ -32,6 +54,31 @@ def _list_shards(shard_dir: Optional[str], list_file: Optional[str]) -> List[str
     if not shard_dir:
         raise ValueError("Provide --shard-dir or --shard-list.")
     return sorted(str(p) for p in Path(shard_dir).glob("shard_*.pt"))
+
+
+def _split_bucket(key: str, seed: int) -> int:
+    digest = hashlib.md5(f"{seed}:{key}".encode()).hexdigest()
+    return int(digest, 16) % 1000
+
+
+def _split_label(key: str, seed: int, train_ratio: float, val_ratio: float) -> str:
+    bucket = _split_bucket(key, seed)
+    train_cutoff = int(train_ratio * 1000)
+    val_cutoff = int((train_ratio + val_ratio) * 1000)
+    if bucket < train_cutoff:
+        return "train"
+    if bucket < val_cutoff:
+        return "val"
+    return "test"
+
+
+def _normalize_split_key(value) -> str:
+    if torch.is_tensor(value):
+        if value.numel() == 1:
+            value = value.item()
+        else:
+            value = value.flatten()[0].item()
+    return str(value)
 
 
 class ShardIterable(IterableDataset):
@@ -45,6 +92,12 @@ class ShardIterable(IterableDataset):
         seed: int = 123,
         shuffle_shards: bool = True,
         shuffle_samples: bool = False,
+        split: str = "all",
+        split_key: str = "mol_key",
+        split_seed: int = 123,
+        split_train: float = 0.8,
+        split_val: float = 0.1,
+        use_distributed: bool = True,
     ) -> None:
         super().__init__()
         self.shard_paths = list(shard_paths)
@@ -56,6 +109,12 @@ class ShardIterable(IterableDataset):
         self.shuffle_shards = shuffle_shards
         self.shuffle_samples = shuffle_samples
         self.epoch = 0
+        self.split = split
+        self.split_key = split_key
+        self.split_seed = split_seed
+        self.split_train = split_train
+        self.split_val = split_val
+        self.use_distributed = use_distributed
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = epoch
@@ -65,7 +124,7 @@ class ShardIterable(IterableDataset):
         worker_id = worker.id if worker else 0
         num_workers = worker.num_workers if worker else 1
 
-        if dist.is_available() and dist.is_initialized():
+        if self.use_distributed and dist.is_available() and dist.is_initialized():
             rank = dist.get_rank()
             world_size = dist.get_world_size()
         else:
@@ -96,6 +155,15 @@ class ShardIterable(IterableDataset):
                     mask_key=self.mask_key,
                     confidence_key=self.confidence_key,
                 )
+                if self.split != "all":
+                    key_val = getattr(item, self.split_key, None)
+                    if key_val is None and self.split_key != "number":
+                        key_val = getattr(item, "number", None)
+                    if key_val is None:
+                        continue
+                    key = _normalize_split_key(key_val)
+                    if _split_label(key, self.split_seed, self.split_train, self.split_val) != self.split:
+                        continue
                 yield item
 
 
@@ -195,6 +263,206 @@ def _compute_stats(
     return mean.to(device), std.to(device)
 
 
+def _get_git_hash() -> str:
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT).decode().strip()
+    except Exception:
+        return "unknown"
+
+
+def _prepare_run_dir(save_dir: Path, args: argparse.Namespace, rank: int) -> Path:
+    run_dir = save_dir
+    if rank == 0:
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "config.json").write_text(
+            json.dumps(vars(args), indent=2, sort_keys=True, default=str)
+        )
+        (run_dir / "git.txt").write_text(_get_git_hash())
+        split_cfg = {
+            "split": args.split,
+            "split_key": args.split_key,
+            "split_seed": args.split_seed,
+            "split_train": args.split_train,
+            "split_val": args.split_val,
+        }
+        (run_dir / "split_config.json").write_text(json.dumps(split_cfg, indent=2, sort_keys=True))
+    return run_dir
+
+
+def _append_metrics(run_dir: Path, row: dict, header: Optional[list[str]] = None) -> None:
+    jsonl_path = run_dir / "metrics.jsonl"
+    with jsonl_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(row) + "\n")
+
+    csv_path = run_dir / "metrics.csv"
+    write_header = not csv_path.exists()
+    if header is None:
+        header = METRICS_HEADER
+    with csv_path.open("a", encoding="utf-8") as f:
+        if write_header:
+            f.write(",".join(header) + "\n")
+        f.write(",".join(str(row.get(k, "")) for k in header) + "\n")
+
+
+def _flatten_errors(errors: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    mask = mask.float()
+    if mask.numel() == 0:
+        return torch.empty(0, device=errors.device)
+    if errors.shape != mask.shape:
+        mask = mask.expand_as(errors)
+    flat = errors.reshape(-1)
+    flat_mask = mask.reshape(-1)
+    return flat[flat_mask > 0]
+
+
+def _bootstrap_ci(
+    values: torch.Tensor, samples: int, ci: float, seed: int
+) -> tuple[float, float, float]:
+    if values.numel() == 0:
+        return 0.0, 0.0, 0.0
+    rng = torch.Generator(device=values.device)
+    rng.manual_seed(seed)
+    n = values.numel()
+    idx = torch.randint(0, n, (samples, n), generator=rng, device=values.device)
+    means = values[idx].mean(dim=1)
+    mean = values.mean().item()
+    alpha = (1.0 - ci) / 2.0
+    lo = torch.quantile(means, alpha).item()
+    hi = torch.quantile(means, 1.0 - alpha).item()
+    return mean, lo, hi
+
+
+def _evaluate(
+    model: nn.Module,
+    loader: DataLoader,
+    task: str,
+    mask_name: str,
+    device: torch.device,
+    base_norm: str,
+    per_atom: bool,
+    norm_mean: torch.Tensor,
+    norm_std: torch.Tensor,
+    use_impute_mask: bool,
+    bootstrap_samples: int,
+    bootstrap_ci: float,
+    seed: int,
+) -> dict:
+    model.eval()
+    mse_vals = []
+    mae_vals = []
+    with torch.no_grad():
+        for batch in loader:
+            batch = batch.to(device)
+            target = getattr(batch, task).float()
+            mask = getattr(batch, mask_name, None)
+            if mask is None or not use_impute_mask:
+                mask = torch.ones_like(target)
+            else:
+                mask = mask.float()
+
+            with torch.cuda.amp.autocast(enabled=False):
+                pred = model(z=batch.z, pos=batch.pos, edge_index=batch.edge_index, batch=batch.batch).float()
+
+            if per_atom:
+                counts = torch.bincount(batch.batch, minlength=target.shape[0]).float().to(device)
+                while counts.dim() < target.dim():
+                    counts = counts.unsqueeze(-1)
+                pred = pred / counts.clamp(min=1.0)
+                target = target / counts.clamp(min=1.0)
+
+            if base_norm == "batch":
+                denom = mask.sum().clamp(min=1.0)
+                mean = (target * mask).sum() / denom
+                var = ((target - mean) ** 2 * mask).sum() / denom
+                std = torch.sqrt(var + 1e-12)
+            elif base_norm == "dataset":
+                mean = norm_mean
+                std = norm_std
+            else:
+                mean = 0.0
+                std = 1.0
+
+            pred = (pred - mean) / std
+            target = (target - mean) / std
+
+            err = (pred - target) ** 2
+            abs_err = (pred - target).abs()
+
+            mse_vals.append(_flatten_errors(err, mask))
+            mae_vals.append(_flatten_errors(abs_err, mask))
+
+    if not mse_vals:
+        return {"mse": 0.0, "mse_lo": 0.0, "mse_hi": 0.0, "mae": 0.0, "mae_lo": 0.0, "mae_hi": 0.0}
+
+    mse = torch.cat(mse_vals)
+    mae = torch.cat(mae_vals)
+    mse_mean, mse_lo, mse_hi = _bootstrap_ci(mse, bootstrap_samples, bootstrap_ci, seed)
+    mae_mean, mae_lo, mae_hi = _bootstrap_ci(mae, bootstrap_samples, bootstrap_ci, seed + 1)
+    return {
+        "mse": mse_mean,
+        "mse_lo": mse_lo,
+        "mse_hi": mse_hi,
+        "mae": mae_mean,
+        "mae_lo": mae_lo,
+        "mae_hi": mae_hi,
+    }
+
+
+def _build_optimizer(args: argparse.Namespace, model: nn.Module) -> torch.optim.Optimizer:
+    if args.optimizer == "adamw":
+        return torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+
+    if args.optimizer == "shampoo":
+        try:
+            shampoo_cls = torch.optim.Shampoo
+        except AttributeError as exc:
+            raise RuntimeError("torch.optim.Shampoo is unavailable in this torch build.") from exc
+        return shampoo_cls(
+            model.parameters(),
+            lr=args.lr,
+            momentum=args.shampoo_momentum,
+            weight_decay=args.shampoo_weight_decay,
+        )
+
+    if args.optimizer == "pt_shampoo":
+        try:
+            from pytorch_optimizer import Shampoo
+        except Exception as exc:
+            raise RuntimeError("pytorch-optimizer is not installed.") from exc
+        return Shampoo(
+            model.parameters(),
+            lr=args.lr,
+            momentum=args.shampoo_momentum,
+            weight_decay=args.shampoo_weight_decay,
+        )
+
+    if args.optimizer == "distributed_shampoo":
+        try:
+            from distributed_shampoo import DistributedShampoo
+        except Exception as exc:
+            raise RuntimeError("distributed-shampoo is not installed.") from exc
+        return DistributedShampoo(
+            model.parameters(),
+            lr=args.lr,
+            momentum=args.shampoo_momentum,
+            weight_decay=args.shampoo_weight_decay,
+        )
+
+    raise ValueError(f"unknown optimizer: {args.optimizer}")
+
+
+def _build_scheduler(
+    args: argparse.Namespace, optimizer: torch.optim.Optimizer
+) -> Optional[torch.optim.lr_scheduler._LRScheduler]:
+    if args.lr_scheduler == "none":
+        return None
+    if args.lr_scheduler == "cosine":
+        return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+    if args.lr_scheduler == "step":
+        return torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.lr_step_size, gamma=args.lr_gamma)
+    raise ValueError(f"unknown scheduler: {args.lr_scheduler}")
+
+
 def build_model(args) -> nn.Module:
     if args.task not in TASK_CONFIGS:
         raise KeyError(f"Unknown task {args.task}. Available: {sorted(TASK_CONFIGS)}")
@@ -240,8 +508,7 @@ def build_model(args) -> nn.Module:
     return model
 
 
-def save_checkpoint(model: nn.Module, save_path: Path, use_fsdp: bool) -> None:
-    save_path.parent.mkdir(parents=True, exist_ok=True)
+def _get_model_state(model: nn.Module, use_fsdp: bool) -> dict:
     if use_fsdp:
         from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
         from torch.distributed.fsdp import FullStateDictConfig, StateDictType
@@ -251,12 +518,59 @@ def save_checkpoint(model: nn.Module, save_path: Path, use_fsdp: bool) -> None:
             StateDictType.FULL_STATE_DICT,
             FullStateDictConfig(offload_to_cpu=True, rank0_only=True),
         ):
-            state = model.state_dict()
-        torch.save(state, save_path)
-        return
+            return model.state_dict()
 
-    state = model.module.state_dict() if hasattr(model, "module") else model.state_dict()
+    return model.module.state_dict() if hasattr(model, "module") else model.state_dict()
+
+
+def save_checkpoint(model: nn.Module, save_path: Path, use_fsdp: bool) -> None:
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    state = _get_model_state(model, use_fsdp)
     torch.save(state, save_path)
+
+
+def save_state(
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: Optional[torch.optim.lr_scheduler._LRScheduler],
+    scaler: torch.cuda.amp.GradScaler,
+    save_path: Path,
+    use_fsdp: bool,
+    extra: Optional[dict] = None,
+) -> None:
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    state = {
+        "model": _get_model_state(model, use_fsdp),
+        "optimizer": optimizer.state_dict(),
+        "scheduler": scheduler.state_dict() if scheduler else None,
+        "scaler": scaler.state_dict() if scaler else None,
+        "extra": extra or {},
+    }
+    torch.save(state, save_path)
+
+
+def load_state(
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: Optional[torch.optim.lr_scheduler._LRScheduler],
+    scaler: torch.cuda.amp.GradScaler,
+    resume_path: Path,
+    strict: bool,
+) -> dict:
+    state = torch.load(resume_path, map_location="cpu", weights_only=False)
+    model_state = state.get("model", state)
+    missing, unexpected = model.load_state_dict(model_state, strict=strict)
+    if missing or unexpected:
+        print(f"resume missing={len(missing)} unexpected={len(unexpected)}")
+
+    opt_state = state.get("optimizer")
+    if opt_state:
+        optimizer.load_state_dict(opt_state)
+    if scheduler and state.get("scheduler"):
+        scheduler.load_state_dict(state["scheduler"])
+    if scaler and state.get("scaler"):
+        scaler.load_state_dict(state["scaler"])
+    return state.get("extra", {})
 
 
 def main() -> None:
@@ -310,6 +624,28 @@ def main() -> None:
     parser.add_argument("--fsdp", action="store_true")
     parser.add_argument("--amp", action="store_true")
     parser.add_argument("--seed", type=int, default=123)
+    parser.add_argument(
+        "--optimizer",
+        default="pt_shampoo",
+        choices=["adamw", "shampoo", "pt_shampoo", "distributed_shampoo"],
+    )
+    parser.add_argument("--shampoo-momentum", type=float, default=0.0)
+    parser.add_argument("--shampoo-weight-decay", type=float, default=0.0)
+    parser.add_argument("--lr-scheduler", default="none", choices=["none", "cosine", "step"])
+    parser.add_argument("--lr-step-size", type=int, default=10)
+    parser.add_argument("--lr-gamma", type=float, default=0.5)
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--resume-path", default=None)
+    parser.add_argument("--save-state", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--run-id", default=None)
+    parser.add_argument("--registry-dir", default=None)
+    parser.add_argument("--eval-every", type=int, default=20)
+    parser.add_argument("--bootstrap-samples", type=int, default=200)
+    parser.add_argument("--bootstrap-ci", type=float, default=0.95)
+    parser.add_argument("--wandb", action="store_true")
+    parser.add_argument("--wandb-project", default=None)
+    parser.add_argument("--wandb-entity", default=None)
+    parser.add_argument("--wandb-run-name", default=None)
 
     parser.add_argument(
         "--normalize",
@@ -322,8 +658,21 @@ def main() -> None:
     parser.add_argument("--mask-mode", default="binary", choices=["binary", "confidence"])
     parser.add_argument("--mask-key", default="field_imputed")
     parser.add_argument("--confidence-key", default="field_confidence")
+    parser.add_argument("--split", default="all", choices=["all", "train", "val", "test"])
+    parser.add_argument("--split-key", default="mol_key")
+    parser.add_argument("--split-seed", type=int, default=123)
+    parser.add_argument("--split-train", type=float, default=0.8)
+    parser.add_argument("--split-val", type=float, default=0.1)
 
     args = parser.parse_args()
+    if not 0.0 <= args.split_train <= 1.0 or not 0.0 <= args.split_val <= 1.0:
+        raise ValueError("--split-train and --split-val must be in [0,1].")
+    if args.split_train + args.split_val >= 1.0:
+        raise ValueError("--split-train + --split-val must be < 1.0.")
+    if args.eval_every < 1:
+        raise ValueError("--eval-every must be >= 1.")
+    if args.bootstrap_samples < 1:
+        raise ValueError("--bootstrap-samples must be >= 1.")
 
     rank, world_size, local_rank = init_distributed()
     torch.manual_seed(args.seed + rank)
@@ -334,8 +683,15 @@ def main() -> None:
     elif args.elora_path is None:
         args.elora_path = "vendored"
 
+    if args.run_id is None:
+        args.run_id = time.strftime("%Y%m%d-%H%M%S")
+    save_dir = Path(args.save_dir)
+    if args.registry_dir:
+        save_dir = Path(args.registry_dir) / args.run_id
+    run_dir = _prepare_run_dir(save_dir, args, rank)
+
     shard_paths = _list_shards(args.shard_dir, args.shard_list)
-    dataset = ShardIterable(
+    train_dataset = ShardIterable(
         shard_paths,
         task=args.task,
         mask_mode=args.mask_mode,
@@ -344,10 +700,65 @@ def main() -> None:
         seed=args.seed,
         shuffle_shards=True,
         shuffle_samples=False,
+        split=args.split,
+        split_key=args.split_key,
+        split_seed=args.split_seed,
+        split_train=args.split_train,
+        split_val=args.split_val,
     )
     exclude_keys = [k.strip() for k in args.exclude_keys.split(",") if k.strip()]
     loader = DataLoader(
-        dataset,
+        train_dataset,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        pin_memory=torch.cuda.is_available(),
+        exclude_keys=exclude_keys,
+    )
+    if args.split == "all" and rank == 0:
+        print("warning: --split=all uses all data for training; val/test will overlap if evaluated.")
+
+    val_dataset = ShardIterable(
+        shard_paths,
+        task=args.task,
+        mask_mode=args.mask_mode,
+        mask_key=args.mask_key,
+        confidence_key=args.confidence_key,
+        seed=args.seed,
+        shuffle_shards=False,
+        shuffle_samples=False,
+        split="val",
+        split_key=args.split_key,
+        split_seed=args.split_seed,
+        split_train=args.split_train,
+        split_val=args.split_val,
+        use_distributed=False,
+    )
+    test_dataset = ShardIterable(
+        shard_paths,
+        task=args.task,
+        mask_mode=args.mask_mode,
+        mask_key=args.mask_key,
+        confidence_key=args.confidence_key,
+        seed=args.seed,
+        shuffle_shards=False,
+        shuffle_samples=False,
+        split="test",
+        split_key=args.split_key,
+        split_seed=args.split_seed,
+        split_train=args.split_train,
+        split_val=args.split_val,
+        use_distributed=False,
+    )
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        pin_memory=torch.cuda.is_available(),
+        exclude_keys=exclude_keys,
+    )
+    test_loader = DataLoader(
+        test_dataset,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         pin_memory=torch.cuda.is_available(),
@@ -372,7 +783,7 @@ def main() -> None:
             norm_std = torch.tensor(stats["std"], device=args.device)
         else:
             stats_loader = DataLoader(
-                dataset,
+                train_dataset,
                 batch_size=args.batch_size,
                 num_workers=args.num_workers,
                 pin_memory=torch.cuda.is_available(),
@@ -405,6 +816,21 @@ def main() -> None:
             if unexpected:
                 print(f"unexpected keys: {len(unexpected)}")
 
+    wandb_run = None
+    if args.wandb and rank == 0:
+        try:
+            import wandb
+
+            wandb_run = wandb.init(
+                project=args.wandb_project,
+                entity=args.wandb_entity,
+                name=args.wandb_run_name or args.run_id,
+                config=vars(args),
+            )
+        except Exception as exc:
+            print(f"wandb disabled: {exc}")
+            wandb_run = None
+
     if args.fsdp:
         from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
@@ -415,12 +841,25 @@ def main() -> None:
             device_ids=[local_rank] if args.device.type == "cuda" else None,
         )
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    optimizer = _build_optimizer(args, model)
+    scheduler = _build_scheduler(args, optimizer)
     scaler = torch.cuda.amp.GradScaler(enabled=args.amp and args.device.type == "cuda")
 
+    resume_epoch = 0
     global_step = 0
-    for epoch in range(args.epochs):
-        dataset.set_epoch(epoch)
+    if args.resume:
+        resume_path = Path(args.resume_path) if args.resume_path else run_dir / f"latest_{args.task}_state.pth"
+        if resume_path.exists():
+            extra = load_state(model, optimizer, scheduler, scaler, resume_path, strict=args.checkpoint_strict)
+            resume_epoch = int(extra.get("epoch", 0))
+            global_step = int(extra.get("global_step", 0))
+            if rank == 0:
+                print(f"resumed from {resume_path} at epoch={resume_epoch} step={global_step}")
+        elif rank == 0:
+            print(f"resume requested but checkpoint not found: {resume_path}")
+
+    for epoch in range(resume_epoch, args.epochs):
+        train_dataset.set_epoch(epoch)
         model.train()
         running = 0.0
         step = -1
@@ -472,17 +911,88 @@ def main() -> None:
             global_step += 1
             if rank == 0 and (global_step % args.log_every == 0):
                 avg_loss = running / max(1, args.log_every)
-                print(f"epoch={epoch} step={global_step} loss={avg_loss:.6f}")
+                lr = optimizer.param_groups[0]["lr"]
+                print(f"epoch={epoch} step={global_step} loss={avg_loss:.6f} lr={lr:.6e}")
+                _append_metrics(
+                    run_dir,
+                    {
+                        "epoch": epoch,
+                        "step": global_step,
+                        "split": "train",
+                        "loss": avg_loss,
+                        "lr": lr,
+                    },
+                )
+                if wandb_run:
+                    wandb_run.log({"train/loss": avg_loss, "lr": lr}, step=global_step)
                 running = 0.0
 
         if step >= 0 and (step + 1) % args.grad_accum != 0:
             scaler.step(optimizer)
             scaler.update()
 
+        if scheduler:
+            scheduler.step()
+
         if rank == 0:
-            save_path = Path(args.save_dir) / f"latest_{args.task}.pth"
+            save_path = run_dir / f"latest_{args.task}.pth"
             save_checkpoint(model, save_path, args.fsdp)
+            if args.save_state:
+                state_path = run_dir / f"latest_{args.task}_state.pth"
+                extra = {"epoch": epoch + 1, "global_step": global_step}
+                save_state(model, optimizer, scheduler, scaler, state_path, args.fsdp, extra=extra)
             print(f"saved {save_path}")
+
+        if rank == 0 and ((epoch + 1) % args.eval_every == 0 or epoch == args.epochs - 1):
+            val_metrics = _evaluate(
+                model,
+                val_loader,
+                args.task,
+                mask_name,
+                args.device,
+                base_norm,
+                per_atom,
+                norm_mean,
+                norm_std,
+                args.use_impute_mask,
+                args.bootstrap_samples,
+                args.bootstrap_ci,
+                args.seed + epoch,
+            )
+            test_metrics = _evaluate(
+                model,
+                test_loader,
+                args.task,
+                mask_name,
+                args.device,
+                base_norm,
+                per_atom,
+                norm_mean,
+                norm_std,
+                args.use_impute_mask,
+                args.bootstrap_samples,
+                args.bootstrap_ci,
+                args.seed + epoch + 10,
+            )
+            metrics = {
+                "epoch": epoch,
+                "step": global_step,
+                "val_mse": val_metrics["mse"],
+                "val_mse_lo": val_metrics["mse_lo"],
+                "val_mse_hi": val_metrics["mse_hi"],
+                "val_mae": val_metrics["mae"],
+                "val_mae_lo": val_metrics["mae_lo"],
+                "val_mae_hi": val_metrics["mae_hi"],
+                "test_mse": test_metrics["mse"],
+                "test_mse_lo": test_metrics["mse_lo"],
+                "test_mse_hi": test_metrics["mse_hi"],
+                "test_mae": test_metrics["mae"],
+                "test_mae_lo": test_metrics["mae_lo"],
+                "test_mae_hi": test_metrics["mae_hi"],
+            }
+            _append_metrics(run_dir, metrics)
+            if wandb_run:
+                wandb_run.log(metrics, step=global_step)
 
     if dist.is_initialized():
         dist.barrier()
