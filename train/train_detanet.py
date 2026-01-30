@@ -490,6 +490,7 @@ def build_model(args) -> nn.Module:
             raise RuntimeError("peft is required for AdaLoRA.") from exc
         adalora_config = AdaLoraConfig(
             r=args.adalora_r,
+            init_r=args.adalora_r,
             lora_alpha=args.adalora_alpha,
             lora_dropout=args.adalora_dropout,
             tinit=args.adalora_tinit,
@@ -521,6 +522,46 @@ def _get_model_state(model: nn.Module, use_fsdp: bool) -> dict:
             return model.state_dict()
 
     return model.module.state_dict() if hasattr(model, "module") else model.state_dict()
+
+
+def _pad_tensor(src: torch.Tensor, dst: torch.Tensor) -> torch.Tensor:
+    padded = torch.zeros_like(dst)
+    if src.ndim != dst.ndim:
+        return padded
+    slices = tuple(slice(0, min(src.shape[i], dst.shape[i])) for i in range(src.ndim))
+    padded[slices] = src[slices]
+    return padded
+
+
+def load_checkpoint(
+    model: nn.Module,
+    ckpt: dict,
+    strict: bool,
+    relax_embeddings: bool,
+    relax_mismatch: bool,
+) -> tuple[list[str], list[str]]:
+    model_state = model.state_dict()
+    new_state = {}
+    skipped = []
+    for key, value in ckpt.items():
+        if key not in model_state:
+            continue
+        target = model_state[key]
+        if value.shape == target.shape:
+            new_state[key] = value
+            continue
+        if relax_embeddings and value.ndim == target.ndim == 2 and "Embedding" in key:
+            new_state[key] = _pad_tensor(value, target)
+            continue
+        if relax_mismatch:
+            skipped.append(key)
+            continue
+        raise RuntimeError(
+            f"checkpoint shape mismatch for {key}: {tuple(value.shape)} vs {tuple(target.shape)}"
+        )
+
+    missing, unexpected = model.load_state_dict(new_state, strict=False)
+    return missing + skipped, unexpected
 
 
 def save_checkpoint(model: nn.Module, save_path: Path, use_fsdp: bool) -> None:
@@ -592,6 +633,18 @@ def main() -> None:
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Strictly enforce that the checkpoint keys match the model.",
+    )
+    parser.add_argument(
+        "--checkpoint-relax-embeddings",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Allow embedding weight shape mismatches by zero-padding to target size.",
+    )
+    parser.add_argument(
+        "--checkpoint-relax-mismatch",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Skip non-embedding mismatched weights when loading a checkpoint.",
     )
     parser.add_argument(
         "--exclude-keys",
@@ -808,7 +861,13 @@ def main() -> None:
                 ckpt = ckpt["module"]
         if isinstance(ckpt, dict) and all(k.startswith("module.") for k in ckpt):
             ckpt = {k[len("module.") :]: v for k, v in ckpt.items()}
-        missing, unexpected = model.load_state_dict(ckpt, strict=args.checkpoint_strict)
+        missing, unexpected = load_checkpoint(
+            model,
+            ckpt,
+            strict=args.checkpoint_strict,
+            relax_embeddings=args.checkpoint_relax_embeddings,
+            relax_mismatch=args.checkpoint_relax_mismatch,
+        )
         if rank == 0:
             print(f"loaded checkpoint: {args.checkpoint}")
             if missing:

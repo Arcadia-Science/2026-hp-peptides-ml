@@ -1,0 +1,1 @@
+FROM wandb/local:latest
