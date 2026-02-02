@@ -3,10 +3,12 @@ from __future__ import annotations
 import argparse
 import csv
 import gzip
+import json
 import multiprocessing as mp
 import os
 import sqlite3
 import tarfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
@@ -565,6 +567,9 @@ def run_job(job: DatasetJob, args) -> None:
     workers = max(1, args.workers)
     if workers == 1:
         _run_job_worker(job, args, rank=0, world_size=1)
+        (job.output_dir / "_DONE").write_text(
+            json.dumps({"job": job.name, "ts": time.time()}), encoding="utf-8"
+        )
         return
     ctx = mp.get_context("spawn")
     procs = []
@@ -577,6 +582,9 @@ def run_job(job: DatasetJob, args) -> None:
     failures = [p.exitcode for p in procs if p.exitcode not in (0, None)]
     if failures:
         raise RuntimeError(f"Job {job.name} failed with exit codes {failures}")
+    (job.output_dir / "_DONE").write_text(
+        json.dumps({"job": job.name, "ts": time.time()}), encoding="utf-8"
+    )
 
 
 def main() -> None:
@@ -662,6 +670,10 @@ def main() -> None:
         tag = f"[job {job_idx}/{total_jobs}]"
         if args.job_count > 1:
             tag = f"[job {job_idx}/{total_jobs} | shard {args.job_index}/{args.job_count}]"
+        done_marker = job.output_dir / "_DONE"
+        if args.resume and done_marker.exists():
+            print(f"{tag} Skipping {job.name} (done marker found)")
+            continue
         print(f"{tag} Processing {job.name} -> {job.output_dir}")
         run_job(job, args)
 

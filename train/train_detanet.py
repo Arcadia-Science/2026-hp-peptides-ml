@@ -148,6 +148,9 @@ class ShardIterable(IterableDataset):
             if self.shuffle_samples:
                 rng.shuffle(data_list)
             for item in data_list:
+                # Skip items that do not contain the target for this task.
+                if getattr(item, self.task, None) is None:
+                    continue
                 _attach_mask(
                     item,
                     task=self.task,
