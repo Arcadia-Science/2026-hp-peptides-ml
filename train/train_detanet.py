@@ -702,6 +702,12 @@ def main() -> None:
     parser.add_argument("--wandb-project", default=None)
     parser.add_argument("--wandb-entity", default=None)
     parser.add_argument("--wandb-run-name", default=None)
+    parser.add_argument("--tensorboard", action="store_true", help="Enable TensorBoard logging.")
+    parser.add_argument(
+        "--tensorboard-logdir",
+        default=None,
+        help="Optional TensorBoard log directory (defaults to <run_dir>/tensorboard).",
+    )
 
     parser.add_argument(
         "--normalize",
@@ -893,6 +899,18 @@ def main() -> None:
             print(f"wandb disabled: {exc}")
             wandb_run = None
 
+    tb_writer = None
+    if args.tensorboard and rank == 0:
+        try:
+            from torch.utils.tensorboard import SummaryWriter
+
+            tb_logdir = Path(args.tensorboard_logdir) if args.tensorboard_logdir else run_dir / "tensorboard"
+            tb_logdir.mkdir(parents=True, exist_ok=True)
+            tb_writer = SummaryWriter(log_dir=str(tb_logdir))
+        except Exception as exc:
+            print(f"tensorboard disabled: {exc}")
+            tb_writer = None
+
     if args.fsdp:
         from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
@@ -987,6 +1005,9 @@ def main() -> None:
                 )
                 if wandb_run:
                     wandb_run.log({"train/loss": avg_loss, "lr": lr}, step=global_step)
+                if tb_writer:
+                    tb_writer.add_scalar("train/loss", avg_loss, global_step)
+                    tb_writer.add_scalar("train/lr", lr, global_step)
                 running = 0.0
 
         if step >= 0 and (step + 1) % args.grad_accum != 0:
@@ -1055,6 +1076,16 @@ def main() -> None:
             _append_metrics(run_dir, metrics)
             if wandb_run:
                 wandb_run.log(metrics, step=global_step)
+            if tb_writer:
+                for key, value in metrics.items():
+                    if isinstance(value, (int, float)):
+                        tb_writer.add_scalar(key, value, global_step)
+
+    if wandb_run:
+        wandb_run.finish()
+    if tb_writer:
+        tb_writer.flush()
+        tb_writer.close()
 
     if dist.is_initialized():
         dist.barrier()
