@@ -215,3 +215,5 @@ __marimo__/
 .venv-311/*
 *.DS_Store
 capsule-3259363/data/qm9s_csv/
+
+scripts/run_ray_tune_remote.sh

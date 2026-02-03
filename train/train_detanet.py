@@ -98,6 +98,7 @@ class ShardIterable(IterableDataset):
         split_train: float = 0.8,
         split_val: float = 0.1,
         use_distributed: bool = True,
+        skip_nonfinite: bool = True,
     ) -> None:
         super().__init__()
         self.shard_paths = list(shard_paths)
@@ -115,6 +116,7 @@ class ShardIterable(IterableDataset):
         self.split_train = split_train
         self.split_val = split_val
         self.use_distributed = use_distributed
+        self.skip_nonfinite = skip_nonfinite
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = epoch
@@ -151,6 +153,15 @@ class ShardIterable(IterableDataset):
                 # Skip items that do not contain the target for this task.
                 if getattr(item, self.task, None) is None:
                     continue
+                if self.skip_nonfinite:
+                    target = getattr(item, self.task, None)
+                    pos = getattr(item, "pos", None)
+                    if target is None or pos is None:
+                        continue
+                    if torch.is_tensor(target) and not torch.isfinite(target).all().item():
+                        continue
+                    if torch.is_tensor(pos) and not torch.isfinite(pos).all().item():
+                        continue
                 _attach_mask(
                     item,
                     task=self.task,
@@ -720,6 +731,12 @@ def main() -> None:
     parser.add_argument("--mask-mode", default="binary", choices=["binary", "confidence"])
     parser.add_argument("--mask-key", default="field_imputed")
     parser.add_argument("--confidence-key", default="field_confidence")
+    parser.add_argument(
+        "--skip-nonfinite",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Skip samples with NaN/Inf in target or positions.",
+    )
     parser.add_argument("--split", default="all", choices=["all", "train", "val", "test"])
     parser.add_argument("--split-key", default="mol_key")
     parser.add_argument("--split-seed", type=int, default=123)
@@ -767,6 +784,7 @@ def main() -> None:
         split_seed=args.split_seed,
         split_train=args.split_train,
         split_val=args.split_val,
+        skip_nonfinite=args.skip_nonfinite,
     )
     exclude_keys = [k.strip() for k in args.exclude_keys.split(",") if k.strip()]
     loader = DataLoader(
@@ -794,6 +812,7 @@ def main() -> None:
         split_train=args.split_train,
         split_val=args.split_val,
         use_distributed=False,
+        skip_nonfinite=args.skip_nonfinite,
     )
     test_dataset = ShardIterable(
         shard_paths,
@@ -810,6 +829,7 @@ def main() -> None:
         split_train=args.split_train,
         split_val=args.split_val,
         use_distributed=False,
+        skip_nonfinite=args.skip_nonfinite,
     )
 
     val_loader = DataLoader(

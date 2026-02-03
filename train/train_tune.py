@@ -234,17 +234,23 @@ def main() -> None:
             reduction_factor=args.reduction_factor,
         )
 
+    storage_path = os.path.abspath(args.local_dir)
+    run_config = ray.air.RunConfig(storage_path=storage_path)
+
+    tune_config_kwargs = dict(
+        num_samples=args.num_samples,
+        max_concurrent_trials=args.max_concurrent,
+        scheduler=scheduler,
+    )
+    if scheduler is None:
+        tune_config_kwargs["metric"] = args.metric
+        tune_config_kwargs["mode"] = args.mode
+
     tuner = tune.Tuner(
         tune.with_resources(trainable, {"cpu": args.cpus_per_trial, "gpu": args.gpus_per_trial}),
         param_space=tune_space,
-        tune_config=tune.TuneConfig(
-            num_samples=args.num_samples,
-            metric=args.metric,
-            mode=args.mode,
-            max_concurrent_trials=args.max_concurrent,
-            scheduler=scheduler,
-        ),
-        run_config=ray.air.RunConfig(local_dir=args.local_dir),
+        tune_config=tune.TuneConfig(**tune_config_kwargs),
+        run_config=run_config,
     )
     results = tuner.fit()
 
