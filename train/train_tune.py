@@ -212,6 +212,17 @@ def main() -> None:
             metrics[args.metric] = float("inf") if args.mode == "min" else float("-inf")
         metrics["exit_code"] = result_code
         metrics["duration_sec"] = duration
+        if result_code != 0 and args.log_stdout:
+            log_path = run_dir / args.log_stdout_name
+            if log_path.exists():
+                try:
+                    tail = log_path.read_text(encoding="utf-8", errors="ignore").splitlines()[-50:]
+                    (run_dir / "error_tail.txt").write_text("\n".join(tail))
+                    print(f"[trial {run_id}] train.log tail:")
+                    for line in tail:
+                        print(line)
+                except Exception:
+                    pass
         session.report(metrics)
         if log_fh:
             log_fh.flush()

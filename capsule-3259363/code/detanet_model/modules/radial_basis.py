@@ -6,9 +6,10 @@ import torch.nn.functional as F
 def cosine_cutoff(r,rc):
     '''Traditional cosine cut-off function.'''
     zeros = torch.zeros_like(r)
-    rc = torch.where(r < rc, r, zeros)
-    out=torch.cos(r/rc)
-    return torch.where(r<rc,out,zeros)
+    mask = r < rc
+    # rc is a scalar cutoff radius; avoid dividing by 0 by masking.
+    out = torch.cos(r / rc)
+    return torch.where(mask, out, zeros)
 
 def softplus_inverse(x):
     if not isinstance(x, torch.Tensor):
@@ -35,6 +36,8 @@ class Bessel_Function(nn.Module):
 
     def forward(self,r,cutoff=None):
         r = r.view(-1, 1)
+        # Avoid division by zero when r contains zeros.
+        r = r.clamp_min(1e-8)
         rbf = self.prefactor * torch.sin(self.alpha*torch.pi * r / self.rc) /(self.beta*r)
         if cutoff is not None:
             rbf=rbf*cutoff.view(-1,1)

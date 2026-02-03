@@ -365,10 +365,17 @@ class DetaNet(nn.Module):
 
         #From ri-rj we obtain the coordinate difference vector and sum the squares to obtain the interatomic distance.
         rij = posj - posi
-        r=torch.norm(rij,dim=-1)
+        r = torch.norm(rij, dim=-1)
+        # Avoid division by zero when normalizing rij.
+        r_safe = r.clamp_min(1e-8)
 
         #Generation of the irrep tensor from the normalised coordinate vector via the spherical harmonic function
-        sh = self.o3.spherical_harmonics(l=self.irreps_sh, x=rij/(r.view(-1,1)), normalize=True, normalization="component")
+        sh = self.o3.spherical_harmonics(
+            l=self.irreps_sh,
+            x=rij / (r_safe.view(-1, 1)),
+            normalize=True,
+            normalization="component",
+        )
         #Radial basis are generated from distances.
         rbf = self.Radial(r)
 
