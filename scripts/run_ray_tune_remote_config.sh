@@ -7,6 +7,8 @@ HOST="${HOST:-ec2-user@your-ec2-host}"
 LOCAL_REPO="${LOCAL_REPO:-$(cd "$(dirname "$0")/.." && pwd)}"
 REMOTE_REPO="${REMOTE_REPO:-/fsx/repos/hp-proteins-ml}"
 PY="${PY:-/home/ec2-user/miniforge3/envs/hp/bin/python}"
+RUN_PREFIX="${RUN_PREFIX:-tune-hij}"
+DETACH="${DETACH:-0}"
 # ================================
 
 echo ">> Using HOST=$HOST"
@@ -29,11 +31,13 @@ rsync -avz -e "ssh -i ${KEY}" \
 
 echo ">> Run remote Ray Tune"
 ssh -i "${KEY}" "${HOST}" \
-  "PY='$PY' REMOTE_REPO='$REMOTE_REPO' bash -s" <<'REMOTE'
+  "PY='$PY' REMOTE_REPO='$REMOTE_REPO' RUN_PREFIX='$RUN_PREFIX' DETACH='$DETACH' bash -s" <<'REMOTE'
 set -euo pipefail
 
 PY="$PY"
 REPO="$REMOTE_REPO"
+RUN_PREFIX="${RUN_PREFIX:-tune-hij}"
+DETACH="${DETACH:-0}"
 RAY_CLI="$(dirname "$PY")/ray"
 
 echo ">> Python path: $PY"
@@ -157,22 +161,34 @@ export NCCL_ASYNC_ERROR_HANDLING="${NCCL_ASYNC_ERROR_HANDLING:-1}"
 export NCCL_BLOCKING_WAIT="${NCCL_BLOCKING_WAIT:-1}"
 export NCCL_TIMEOUT="${NCCL_TIMEOUT:-1800}"
 
-WANDB_MODE=offline WANDB_SILENT=true \
-"$PY" "$REPO/train/train_tune.py" \
-  --registry-dir /fsx/model_registry \
-  --run-prefix tune-hij \
-  --param-space-file /tmp/param_space.json \
-  --base-args "$(tr -d '\n' </tmp/base_args.json)" \
-  --num-samples 8 \
-  --max-concurrent "$MAX_CONCURRENT" \
-  --cpus-per-trial "$CPUS_PER_TRIAL" \
-  --gpus-per-trial "$GPUS_PER_TRIAL" \
-  --scheduler asha \
-  --max-t 5 \
-  --report-interval 60 \
-  --best-copy \
+RUN_CMD=(
+  "$PY" "$REPO/train/train_tune.py"
+  --registry-dir /fsx/model_registry
+  --run-prefix "$RUN_PREFIX"
+  --param-space-file /tmp/param_space.json
+  --base-args "$(tr -d '\n' </tmp/base_args.json)"
+  --num-samples 8
+  --max-concurrent "$MAX_CONCURRENT"
+  --cpus-per-trial "$CPUS_PER_TRIAL"
+  --gpus-per-trial "$GPUS_PER_TRIAL"
+  --scheduler asha
+  --max-t 5
+  --report-interval 60
+  --best-copy
   --best-dir best
+)
 
-echo ">> Metrics live under: /fsx/model_registry/${RUN_PREFIX:-tune-hij}-*"
+if [ "$DETACH" = "1" ]; then
+  LOG="/fsx/model_registry/${RUN_PREFIX}-nohup.log"
+  nohup env WANDB_MODE=offline WANDB_SILENT=true \
+    "${RUN_CMD[@]}" > "$LOG" 2>&1 &
+  echo ">> Detached PID $! log=$LOG"
+  exit 0
+fi
+
+WANDB_MODE=offline WANDB_SILENT=true \
+"${RUN_CMD[@]}"
+
+echo ">> Metrics live under: /fsx/model_registry/${RUN_PREFIX}-*"
 echo ">> TensorBoard: tensorboard --logdir /fsx/model_registry --bind_all --port 6006"
 REMOTE
