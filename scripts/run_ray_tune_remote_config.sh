@@ -88,6 +88,7 @@ LOG_PREDS_MAX="${LOG_PREDS_MAX:-5}"
 EPOCHS="${EPOCHS:-5}"
 EVAL_EVERY="${EVAL_EVERY:-1}"
 MAX_T="${MAX_T:-5}"
+SCHEDULER="${SCHEDULER:-asha}"
 FIXED_LR="${FIXED_LR:-}"
 FIXED_BATCH_SIZE="${FIXED_BATCH_SIZE:-}"
 FIXED_ADALORA_R="${FIXED_ADALORA_R:-}"
@@ -711,6 +712,10 @@ MAX_CONCURRENT="${MAX_CONCURRENT:-4}"
 CPUS_PER_TRIAL="${CPUS_PER_TRIAL:-12}"
 NUM_SAMPLES="${NUM_SAMPLES:-8}"
 
+if [ "$NUM_SAMPLES" -le 1 ] && [ -z "${SCHEDULER_OVERRIDE:-}" ]; then
+  SCHEDULER="none"
+fi
+
 if [ "$SMOKE" = "1" ]; then
   if [ "${SMOKE_ITEMS}" -gt 0 ]; then
     if [ -z "$USER_GPUS_PER_TRIAL" ]; then
@@ -843,7 +848,7 @@ RUN_CMD=(
   --max-concurrent "$MAX_CONCURRENT"
   --cpus-per-trial "$CPUS_PER_TRIAL"
   --gpus-per-trial "$GPUS_PER_TRIAL"
-  --scheduler asha
+  --scheduler "$SCHEDULER"
   --max-t "$MAX_T"
 )
 
