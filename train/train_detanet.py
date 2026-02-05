@@ -1343,131 +1343,131 @@ def main() -> None:
                 skipped_batches += 1
                 continue
 
-                batch = batch.to(args.device)
-                if step % args.grad_accum == 0:
-                    optimizer.zero_grad(set_to_none=True)
+            batch = batch.to(args.device)
+            if step % args.grad_accum == 0:
+                optimizer.zero_grad(set_to_none=True)
 
-                try:
-                    target = getattr(batch, args.task).float()
-                    mask = getattr(batch, mask_name, None)
-                    if mask is None or not args.use_impute_mask:
-                        mask = torch.ones_like(target)
-                    else:
-                        mask = mask.float()
+            try:
+                target = getattr(batch, args.task).float()
+                mask = getattr(batch, mask_name, None)
+                if mask is None or not args.use_impute_mask:
+                    mask = torch.ones_like(target)
+                else:
+                    mask = mask.float()
 
-                    with torch.cuda.amp.autocast(enabled=amp_enabled):
-                        pred = model(z=batch.z, pos=batch.pos, edge_index=batch.edge_index, batch=batch.batch).float()
+                with torch.cuda.amp.autocast(enabled=amp_enabled):
+                    pred = model(z=batch.z, pos=batch.pos, edge_index=batch.edge_index, batch=batch.batch).float()
 
-                    if args.debug_zero_distances and step == 0 and hasattr(batch, "edge_index"):
-                        i, j = batch.edge_index
-                        rij = batch.pos[j] - batch.pos[i]
-                        zero_edges = (torch.norm(rij, dim=-1) == 0).sum().item()
-                        if zero_edges:
-                            print(f"epoch={epoch} zero_distance_edges={zero_edges}")
+                if args.debug_zero_distances and step == 0 and hasattr(batch, "edge_index"):
+                    i, j = batch.edge_index
+                    rij = batch.pos[j] - batch.pos[i]
+                    zero_edges = (torch.norm(rij, dim=-1) == 0).sum().item()
+                    if zero_edges:
+                        print(f"epoch={epoch} zero_distance_edges={zero_edges}")
 
-                    if per_atom:
-                        counts = torch.bincount(batch.batch, minlength=target.shape[0]).float().to(args.device)
-                        while counts.dim() < target.dim():
-                            counts = counts.unsqueeze(-1)
-                        pred = pred / counts.clamp(min=1.0)
-                        target = target / counts.clamp(min=1.0)
+                if per_atom:
+                    counts = torch.bincount(batch.batch, minlength=target.shape[0]).float().to(args.device)
+                    while counts.dim() < target.dim():
+                        counts = counts.unsqueeze(-1)
+                    pred = pred / counts.clamp(min=1.0)
+                    target = target / counts.clamp(min=1.0)
 
-                    raw_pred = pred.detach()
-                    raw_target = target.detach()
+                raw_pred = pred.detach()
+                raw_target = target.detach()
 
-                    if base_norm == "batch":
-                        denom = mask.sum().clamp(min=1.0)
-                        mean = (target * mask).sum() / denom
-                        var = ((target - mean) ** 2 * mask).sum() / denom
-                        std = torch.sqrt(var + 1e-12)
-                    elif base_norm == "dataset":
-                        mean = norm_mean
-                        std = norm_std
-                    else:
-                        mean = 0.0
-                        std = 1.0
+                if base_norm == "batch":
+                    denom = mask.sum().clamp(min=1.0)
+                    mean = (target * mask).sum() / denom
+                    var = ((target - mean) ** 2 * mask).sum() / denom
+                    std = torch.sqrt(var + 1e-12)
+                elif base_norm == "dataset":
+                    mean = norm_mean
+                    std = norm_std
+                else:
+                    mean = 0.0
+                    std = 1.0
 
-                    pred = (pred - mean) / std
-                    target = (target - mean) / std
+                pred = (pred - mean) / std
+                target = (target - mean) / std
 
+                if args.skip_nonfinite:
+                    pred_bad = not torch.isfinite(pred).all().item()
+                    target_bad = not torch.isfinite(target).all().item()
+                    mask_bad = (
+                        torch.is_tensor(mask)
+                        and mask.dtype.is_floating_point
+                        and not torch.isfinite(mask).all().item()
+                    )
+                    if _sync_skip(pred_bad or target_bad or mask_bad, args.device):
+                        skipped_batches += 1
+                        continue
+
+                loss = ((pred - target) ** 2 * mask).sum() / mask.sum().clamp(min=1.0)
+                loss = loss / args.grad_accum
+                if args.skip_nonfinite:
+                    loss_bad = not torch.isfinite(loss).all().item()
+                    if _sync_skip(loss_bad, args.device):
+                        skipped_batches += 1
+                        continue
+
+                scaler.scale(loss).backward()
+                if (step + 1) % args.grad_accum == 0:
+                    if args.grad_clip and args.grad_clip > 0:
+                        if amp_enabled:
+                            scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
                     if args.skip_nonfinite:
-                        pred_bad = not torch.isfinite(pred).all().item()
-                        target_bad = not torch.isfinite(target).all().item()
-                        mask_bad = (
-                            torch.is_tensor(mask)
-                            and mask.dtype.is_floating_point
-                            and not torch.isfinite(mask).all().item()
-                        )
-                        if _sync_skip(pred_bad or target_bad or mask_bad, args.device):
-                            skipped_batches += 1
-                            continue
-
-                    loss = ((pred - target) ** 2 * mask).sum() / mask.sum().clamp(min=1.0)
-                    loss = loss / args.grad_accum
-                    if args.skip_nonfinite:
-                        loss_bad = not torch.isfinite(loss).all().item()
-                        if _sync_skip(loss_bad, args.device):
-                            skipped_batches += 1
-                            continue
-
-                    scaler.scale(loss).backward()
-                    if (step + 1) % args.grad_accum == 0:
-                        if args.grad_clip and args.grad_clip > 0:
-                            if amp_enabled:
-                                scaler.unscale_(optimizer)
-                            torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-                        if args.skip_nonfinite:
-                            if amp_enabled:
-                                scaler.unscale_(optimizer)
-                            grad_bad = _has_nonfinite_grad(model)
-                            if _sync_skip(grad_bad, args.device):
-                                skipped_batches += 1
-                                optimizer.zero_grad(set_to_none=True)
-                                scaler.update()
-                                continue
-                        scaler.step(optimizer)
-                        scaler.update()
-                except Exception:
-                    if args.skip_bad_batches:
-                        if _sync_skip(True, args.device):
+                        if amp_enabled:
+                            scaler.unscale_(optimizer)
+                        grad_bad = _has_nonfinite_grad(model)
+                        if _sync_skip(grad_bad, args.device):
                             skipped_batches += 1
                             optimizer.zero_grad(set_to_none=True)
-                            if amp_enabled:
-                                scaler.update()
+                            scaler.update()
                             continue
-                    raise
+                    scaler.step(optimizer)
+                    scaler.update()
+            except Exception:
+                if args.skip_bad_batches:
+                    if _sync_skip(True, args.device):
+                        skipped_batches += 1
+                        optimizer.zero_grad(set_to_none=True)
+                        if amp_enabled:
+                            scaler.update()
+                        continue
+                raise
 
-                running += loss.item()
-                global_step += 1
-                if rank == 0 and (global_step % args.log_every == 0):
-                    avg_loss = running / max(1, args.log_every)
-                    lr = optimizer.param_groups[0]["lr"]
-                    print(f"epoch={epoch} step={global_step} loss={avg_loss:.6f} lr={lr:.6e}")
-                    metrics_row = {
-                        "epoch": epoch,
-                        "step": global_step,
-                        "split": "train",
-                        "loss": avg_loss,
-                        "lr": lr,
-                    }
-                    if args.log_train_preds:
-                        max_samples = max(0, int(args.log_preds_max))
-                        if max_samples > 0:
-                            flat_pred = pred.detach().view(-1).cpu().tolist()[:max_samples]
-                            flat_target = target.detach().view(-1).cpu().tolist()[:max_samples]
-                            flat_raw_pred = raw_pred.detach().view(-1).cpu().tolist()[:max_samples]
-                            flat_raw_target = raw_target.detach().view(-1).cpu().tolist()[:max_samples]
-                            metrics_row["train_pred_samples"] = flat_pred
-                            metrics_row["train_target_samples"] = flat_target
-                            metrics_row["train_raw_pred_samples"] = flat_raw_pred
-                            metrics_row["train_raw_target_samples"] = flat_raw_target
-                    _append_metrics(run_dir, metrics_row)
-                    if wandb_run:
-                        wandb_run.log({"train/loss": avg_loss, "lr": lr}, step=global_step)
-                    if tb_writer:
-                        tb_writer.add_scalar("train/loss", avg_loss, global_step)
-                        tb_writer.add_scalar("train/lr", lr, global_step)
-                    running = 0.0
+            running += loss.item()
+            global_step += 1
+            if rank == 0 and (global_step % args.log_every == 0):
+                avg_loss = running / max(1, args.log_every)
+                lr = optimizer.param_groups[0]["lr"]
+                print(f"epoch={epoch} step={global_step} loss={avg_loss:.6f} lr={lr:.6e}")
+                metrics_row = {
+                    "epoch": epoch,
+                    "step": global_step,
+                    "split": "train",
+                    "loss": avg_loss,
+                    "lr": lr,
+                }
+                if args.log_train_preds:
+                    max_samples = max(0, int(args.log_preds_max))
+                    if max_samples > 0:
+                        flat_pred = pred.detach().view(-1).cpu().tolist()[:max_samples]
+                        flat_target = target.detach().view(-1).cpu().tolist()[:max_samples]
+                        flat_raw_pred = raw_pred.detach().view(-1).cpu().tolist()[:max_samples]
+                        flat_raw_target = raw_target.detach().view(-1).cpu().tolist()[:max_samples]
+                        metrics_row["train_pred_samples"] = flat_pred
+                        metrics_row["train_target_samples"] = flat_target
+                        metrics_row["train_raw_pred_samples"] = flat_raw_pred
+                        metrics_row["train_raw_target_samples"] = flat_raw_target
+                _append_metrics(run_dir, metrics_row)
+                if wandb_run:
+                    wandb_run.log({"train/loss": avg_loss, "lr": lr}, step=global_step)
+                if tb_writer:
+                    tb_writer.add_scalar("train/loss", avg_loss, global_step)
+                    tb_writer.add_scalar("train/lr", lr, global_step)
+                running = 0.0
 
         if step >= 0 and (step + 1) % args.grad_accum != 0:
             scaler.step(optimizer)

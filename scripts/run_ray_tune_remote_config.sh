@@ -75,6 +75,9 @@ STAGE_SHARDS_PER_DATASET="${STAGE_SHARDS_PER_DATASET:-0}"
 STAGE_TOTAL_SHARDS="${STAGE_TOTAL_SHARDS:-0}"
 STAGE_SEED="${STAGE_SEED:-123}"
 MIN_SAMPLES="${MIN_SAMPLES:-10}"
+PREFLIGHT="${PREFLIGHT:-1}"
+PREFLIGHT_SHARDS="${PREFLIGHT_SHARDS:-5}"
+PREFLIGHT_FULL_SHARDS="${PREFLIGHT_FULL_SHARDS:-20}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
 LOADER_TIMEOUT="${LOADER_TIMEOUT:-120}"
 PREFETCH_FACTOR="${PREFETCH_FACTOR:-2}"
@@ -340,6 +343,95 @@ SPLIT_KEY="mol_key"
 SPLIT_TRAIN="0.7"
 SPLIT_VAL="0.1"
 LOG_PREDS="0"
+
+if [ "$PREFLIGHT" = "1" ]; then
+  export SHARD_LIST
+  export SPLIT_KEY
+  export SPLIT_TRAIN
+  export SPLIT_VAL
+  export PREFLIGHT_SHARDS
+  export PREFLIGHT_FULL_SHARDS
+  export MIN_SAMPLES
+  "$PY" - <<'PY'
+import hashlib
+import math
+import os
+import random
+from pathlib import Path
+
+import torch
+
+shard_list = os.environ["SHARD_LIST"]
+split_key = os.environ["SPLIT_KEY"]
+split_train = float(os.environ["SPLIT_TRAIN"])
+split_val = float(os.environ["SPLIT_VAL"])
+pref_shards = int(os.environ.get("PREFLIGHT_SHARDS", "5"))
+full_limit = int(os.environ.get("PREFLIGHT_FULL_SHARDS", "20"))
+min_samples = int(os.environ.get("MIN_SAMPLES", "10"))
+seed = 123
+
+paths = [p.strip() for p in Path(shard_list).read_text().splitlines() if p.strip()]
+if not paths:
+    raise SystemExit("Preflight failed: shard list is empty.")
+
+if len(paths) <= full_limit:
+    sample_paths = paths
+    sampled = False
+else:
+    random.seed(seed)
+    sample_paths = random.sample(paths, k=min(pref_shards, len(paths)))
+    sampled = True
+
+def split_label(key: str) -> str:
+    digest = hashlib.md5(f"{seed}:{key}".encode()).hexdigest()
+    bucket = int(digest, 16) % 1000
+    train_cutoff = int(split_train * 1000)
+    val_cutoff = int((split_train + split_val) * 1000)
+    if bucket < train_cutoff:
+        return "train"
+    if bucket < val_cutoff:
+        return "val"
+    return "test"
+
+def normalize_key(value) -> str:
+    if torch.is_tensor(value):
+        if value.numel() == 1:
+            value = value.item()
+        else:
+            value = value.flatten()[0].item()
+    return str(value)
+
+counts = {"total": 0, "finite": 0, "train": 0, "val": 0, "test": 0}
+for path in sample_paths:
+    data = torch.load(path, map_location="cpu", weights_only=False)
+    for item in data:
+        counts["total"] += 1
+        target = getattr(item, "Hij", None)
+        if target is None:
+            continue
+        pos = getattr(item, "pos", None)
+        if pos is None:
+            continue
+        if torch.is_tensor(target) and not torch.isfinite(target).all().item():
+            continue
+        if torch.is_tensor(pos) and not torch.isfinite(pos).all().item():
+            continue
+        counts["finite"] += 1
+        key_val = getattr(item, split_key, None)
+        if key_val is None:
+            key_val = getattr(item, "number", None)
+        if key_val is None:
+            continue
+        label = split_label(normalize_key(key_val))
+        counts[label] += 1
+
+prefix = "Sampled" if sampled else "Full"
+print(f">> PREFLIGHT ({prefix} {len(sample_paths)}/{len(paths)} shards)")
+print(f">> counts: total={counts['total']} finite={counts['finite']} train={counts['train']} val={counts['val']} test={counts['test']}")
+if counts["train"] < min_samples or counts["val"] < min_samples or counts["test"] < min_samples:
+    print(f">> WARNING: sample split below min_samples={min_samples}.")
+PY
+fi
 
 if [ -n "$FIXED_LR" ] || [ -n "$FIXED_BATCH_SIZE" ] || [ -n "$FIXED_ADALORA_R" ] || [ -n "$FIXED_ADALORA_ALPHA" ]; then
   lr_val="${FIXED_LR:-1e-4}"
@@ -639,6 +731,7 @@ export SPLIT_KEY
 export SPLIT_TRAIN
 export SPLIT_VAL
 export EPOCHS
+export EVAL_EVERY
 export LOG_EVERY
 export DDP_TIMEOUT
 export NUM_WORKERS
@@ -666,18 +759,12 @@ args = [
     "--no-checkpoint-strict",
     "--checkpoint-relax-embeddings",
     "--checkpoint-relax-mismatch",
-    "--split",
-    "train",
     "--split-key",
     os.environ["SPLIT_KEY"],
     "--split-train",
     os.environ["SPLIT_TRAIN"],
     "--split-val",
     os.environ["SPLIT_VAL"],
-    "--min-samples",
-    os.environ["MIN_SAMPLES"],
-    "--expected-workers",
-    os.environ["GPUS_PER_TRIAL"],
     "--epochs",
     os.environ["EPOCHS"],
     "--eval-every",
@@ -723,10 +810,25 @@ with open("/tmp/base_args.json", "w", encoding="utf-8") as f:
     json.dump(args, f)
 PY
 
-export NCCL_ASYNC_ERROR_HANDLING="${NCCL_ASYNC_ERROR_HANDLING:-1}"
-export NCCL_BLOCKING_WAIT="${NCCL_BLOCKING_WAIT:-1}"
-export TORCH_NCCL_BLOCKING_WAIT="${TORCH_NCCL_BLOCKING_WAIT:-1}"
-export TORCH_NCCL_ASYNC_ERROR_HANDLING="${TORCH_NCCL_ASYNC_ERROR_HANDLING:-1}"
+normalize_bool_env() {
+  local name="$1"
+  local default="$2"
+  local val="${!name-}"
+  case "$val" in
+    "" ) val="$default" ;;
+    0|1 ) ;;
+    * )
+      echo ">> Warning: ${name}=${val} is invalid; using ${default}."
+      val="$default"
+      ;;
+  esac
+  export "${name}=${val}"
+}
+
+normalize_bool_env NCCL_ASYNC_ERROR_HANDLING 1
+normalize_bool_env NCCL_BLOCKING_WAIT 1
+normalize_bool_env TORCH_NCCL_BLOCKING_WAIT 1
+normalize_bool_env TORCH_NCCL_ASYNC_ERROR_HANDLING 1
 export NCCL_TIMEOUT="${NCCL_TIMEOUT:-1800}"
 export NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
 
@@ -743,9 +845,6 @@ RUN_CMD=(
   --gpus-per-trial "$GPUS_PER_TRIAL"
   --scheduler asha
   --max-t "$MAX_T"
-  --report-interval 60
-  --best-copy
-  --best-dir best
 )
 
 if [ "$DETACH" = "1" ]; then

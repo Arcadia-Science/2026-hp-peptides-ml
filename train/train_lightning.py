@@ -160,6 +160,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--split-val", type=float, default=0.1)
     parser.add_argument("--min-samples", type=int, default=10)
     parser.add_argument("--expected-workers", type=int, default=1)
+    parser.add_argument("--ray-serialize-data", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--tensorboard", action="store_true")
     return parser
 
@@ -181,6 +182,7 @@ def build_config(base_args: List[str], overrides: Dict[str, Any]) -> Dict[str, A
 
 
 def _rows_from_shard(row: Dict[str, Any], cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    import pickle
     import torch  # local import for Ray workers
 
     data_list = torch.load(io.BytesIO(row["bytes"]), map_location="cpu", weights_only=False)
@@ -209,7 +211,10 @@ def _rows_from_shard(row: Dict[str, Any], cfg: Dict[str, Any]) -> List[Dict[str,
             continue
         if exclude_keys:
             _strip_keys(item, exclude_keys)
-        out.append({"data": item, "split": split})
+        payload = item
+        if cfg.get("ray_serialize_data", True):
+            payload = pickle.dumps(item)
+        out.append({"data": payload, "split": split})
     return out
 
 
@@ -220,6 +225,9 @@ def _parse_shard_dirs(value: Optional[str]) -> List[str]:
 
 
 def build_ray_datasets(cfg: Dict[str, Any]) -> Dict[str, "ray.data.Dataset"]:
+    ctx = ray.data.DataContext.get_current()
+    ctx.enable_tensor_extension_casting = False
+    ctx.enable_fallback_to_arrow_object_ext_type = True
     shard_paths: List[str] = []
     for shard_dir in _parse_shard_dirs(cfg.get("shard_dirs")):
         shard_paths.extend(_list_shards(shard_dir, None))
@@ -269,7 +277,14 @@ class RayPyGDataset(IterableDataset):
             items = []
             for row in batch:
                 if isinstance(row, dict) and "data" in row:
-                    items.append(row["data"])
+                    data = row["data"]
+                    if isinstance(data, memoryview):
+                        data = data.tobytes()
+                    if isinstance(data, (bytes, bytearray)):
+                        import pickle
+
+                        data = pickle.loads(data)
+                    items.append(data)
                 else:
                     items.append(row)
             if not items:
