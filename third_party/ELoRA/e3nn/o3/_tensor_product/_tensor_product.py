@@ -3,6 +3,7 @@ from math import sqrt
 from typing import List, Optional, Union, Any
 
 import e3nn
+import os
 import torch
 import torch.fx
 from e3nn import o3
@@ -390,8 +391,14 @@ class TensorProduct(CodeGenMixin, torch.nn.Module):
         self.weight_numel = sum(prod(ins.path_shape) for ins in self.instructions if ins.has_weight)
         # LoRA weights initialization
         self.LoRA_weight = []
-        self.alpha = 16
-        self.r = 16
+        try:
+            self.alpha = int(os.environ.get("ELORA_ALPHA", 16))
+        except Exception:
+            self.alpha = 16
+        try:
+            self.r = int(os.environ.get("ELORA_R", 16))
+        except Exception:
+            self.r = 16
         self.LoRA_weight_numel = 0
         
         if internal_weights and self.weight_numel > 0:

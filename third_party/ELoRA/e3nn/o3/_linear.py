@@ -1,6 +1,7 @@
 from typing import List, NamedTuple, Optional, Tuple, Union
 
 from opt_einsum_fx import optimize_einsums_full
+import os
 import torch
 from torch import fx
 
@@ -226,8 +227,14 @@ class Linear(CodeGenMixin, torch.nn.Module):
             self.weight = torch.nn.Parameter(torch.randn(*((f_in, f_out) if f_in is not None else ()), self.weight_numel))
             # LoRA weights initialization
             self.LoRA_weight = []
-            self.alpha = 16
-            self.r = 16
+            try:
+                self.alpha = int(os.environ.get("ELORA_ALPHA", 16))
+            except Exception:
+                self.alpha = 16
+            try:
+                self.r = int(os.environ.get("ELORA_R", 16))
+            except Exception:
+                self.r = 16
             for ins in self.instructions:
                 if ins.i_in != -1:
                     self.LoRA_weight.append(torch.nn.Parameter(torch.randn(*((f_in, f_out) if f_in is not None else ()), ins.path_shape[0], self.r)))

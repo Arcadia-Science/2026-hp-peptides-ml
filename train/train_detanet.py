@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import contextlib
 import hashlib
 import json
@@ -91,6 +92,8 @@ class ShardIterable(IterableDataset):
         mask_mode: str,
         mask_key: str,
         confidence_key: str,
+        impute_weight: float,
+        mask_min: float,
         seed: int = 123,
         shuffle_shards: bool = True,
         shuffle_samples: bool = False,
@@ -101,6 +104,11 @@ class ShardIterable(IterableDataset):
         split_val: float = 0.1,
         use_distributed: bool = True,
         skip_nonfinite: bool = True,
+        single_key: Optional[str] = None,
+        single_number: Optional[int] = None,
+        single_first: bool = False,
+        single_repeat: int = 0,
+        force_all_splits: bool = False,
     ) -> None:
         super().__init__()
         self.shard_paths = list(shard_paths)
@@ -108,6 +116,8 @@ class ShardIterable(IterableDataset):
         self.mask_mode = mask_mode
         self.mask_key = mask_key
         self.confidence_key = confidence_key
+        self.impute_weight = impute_weight
+        self.mask_min = mask_min
         self.seed = seed
         self.shuffle_shards = shuffle_shards
         self.shuffle_samples = shuffle_samples
@@ -119,9 +129,100 @@ class ShardIterable(IterableDataset):
         self.split_val = split_val
         self.use_distributed = use_distributed
         self.skip_nonfinite = skip_nonfinite
+        self.single_key = single_key
+        self.single_number = single_number
+        self.single_first = single_first
+        self.single_repeat = single_repeat
+        self.force_all_splits = force_all_splits
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = epoch
+
+    def _clone_item(self, item):
+        if hasattr(item, "clone"):
+            return item.clone()
+        return copy.deepcopy(item)
+
+    def _single_mode(self) -> bool:
+        return (
+            self.single_key is not None
+            or self.single_number is not None
+            or self.single_first
+        )
+
+    def _passes_split(self, item) -> bool:
+        if self.force_all_splits or self.split == "all":
+            return True
+        key_val = getattr(item, self.split_key, None)
+        if key_val is None and self.split_key != "number":
+            key_val = getattr(item, "number", None)
+        if key_val is None:
+            return False
+        key = _normalize_split_key(key_val)
+        return _split_label(key, self.split_seed, self.split_train, self.split_val) == self.split
+
+    def _is_valid_item(self, item) -> bool:
+        target = getattr(item, self.task, None)
+        if target is None:
+            return False
+        if self.skip_nonfinite:
+            pos = getattr(item, "pos", None)
+            if pos is None:
+                return False
+            if torch.is_tensor(target) and not torch.isfinite(target).all().item():
+                return False
+            if not torch.is_tensor(target) and isinstance(target, (float, int)) and not math.isfinite(target):
+                return False
+            if torch.is_tensor(pos) and not torch.isfinite(pos).all().item():
+                return False
+            bad = False
+            for key in item.keys():
+                val = item[key]
+                if torch.is_tensor(val) and val.dtype.is_floating_point:
+                    if not torch.isfinite(val).all().item():
+                        bad = True
+                        break
+            if bad:
+                return False
+        if self._single_mode():
+            # For single-sample memorization, skip items whose masks zero out all targets.
+            mask = getattr(item, f"mask_{self.task}", None)
+            if torch.is_tensor(mask):
+                try:
+                    if mask.float().sum().item() <= 0:
+                        return False
+                except Exception:
+                    pass
+            elif isinstance(mask, (float, int)):
+                if float(mask) <= 0.0:
+                    return False
+        if not self._passes_split(item):
+            return False
+        return True
+
+    def _matches_single(self, item) -> bool:
+        if self.single_number is not None:
+            return getattr(item, "number", None) == self.single_number
+        if self.single_key is not None:
+            key_val = getattr(item, self.split_key, None)
+            if key_val is None and self.split_key != "number":
+                key_val = getattr(item, "number", None)
+            if key_val is None:
+                return False
+            return _normalize_split_key(key_val) == str(self.single_key)
+        return self.single_first
+
+    def _find_single_item(self):
+        # Always scan full shard list in a deterministic order so all ranks
+        # pick the same sample when requested.
+        for shard_path in self.shard_paths:
+            data_list = torch.load(shard_path, map_location="cpu", weights_only=False)
+            for item in data_list:
+                if not self._is_valid_item(item):
+                    continue
+                if self._matches_single(item):
+                    return item
+        return None
 
     def _partition(self, paths: List[str]) -> Iterable[str]:
         worker = get_worker_info()
@@ -143,6 +244,25 @@ class ShardIterable(IterableDataset):
 
     def __iter__(self):
         rng = random.Random(self.seed + self.epoch)
+        if self._single_mode():
+            if self.single_repeat < 1:
+                raise ValueError("--single-repeat must be >= 1 in single-sample mode")
+            item = self._find_single_item()
+            if item is None:
+                raise ValueError("single-sample mode requested but no matching item was found")
+            for _ in range(self.single_repeat):
+                cloned = self._clone_item(item)
+                _attach_mask(
+                    cloned,
+                    task=self.task,
+                    mask_mode=self.mask_mode,
+                    mask_key=self.mask_key,
+                    confidence_key=self.confidence_key,
+                    impute_weight=self.impute_weight,
+                    mask_min=self.mask_min,
+                )
+                yield cloned
+            return
         paths = list(self.shard_paths)
         if self.shuffle_shards:
             rng.shuffle(paths)
@@ -152,46 +272,17 @@ class ShardIterable(IterableDataset):
             if self.shuffle_samples:
                 rng.shuffle(data_list)
             for item in data_list:
-                # Skip items that do not contain the target for this task.
-                target = getattr(item, self.task, None)
-                if target is None:
+                if not self._is_valid_item(item):
                     continue
-                if self.skip_nonfinite:
-                    pos = getattr(item, "pos", None)
-                    if pos is None:
-                        continue
-                    if torch.is_tensor(target) and not torch.isfinite(target).all().item():
-                        continue
-                    if not torch.is_tensor(target) and isinstance(target, (float, int)) and not math.isfinite(target):
-                        continue
-                    if torch.is_tensor(pos) and not torch.isfinite(pos).all().item():
-                        continue
-                    # Reject any sample that contains non-finite floating tensors.
-                    bad = False
-                    for key in item.keys():
-                        val = item[key]
-                        if torch.is_tensor(val) and val.dtype.is_floating_point:
-                            if not torch.isfinite(val).all().item():
-                                bad = True
-                                break
-                    if bad:
-                        continue
                 _attach_mask(
                     item,
                     task=self.task,
                     mask_mode=self.mask_mode,
                     mask_key=self.mask_key,
                     confidence_key=self.confidence_key,
+                    impute_weight=self.impute_weight,
+                    mask_min=self.mask_min,
                 )
-                if self.split != "all":
-                    key_val = getattr(item, self.split_key, None)
-                    if key_val is None and self.split_key != "number":
-                        key_val = getattr(item, "number", None)
-                    if key_val is None:
-                        continue
-                    key = _normalize_split_key(key_val)
-                    if _split_label(key, self.split_seed, self.split_train, self.split_val) != self.split:
-                        continue
                 yield item
 
 
@@ -224,27 +315,72 @@ def init_distributed(timeout_seconds: Optional[int] = None) -> tuple[int, int, i
     return rank, world_size, local_rank
 
 
-def _attach_mask(item, task: str, mask_mode: str, mask_key: str, confidence_key: str) -> None:
+def _attach_mask(
+    item,
+    task: str,
+    mask_mode: str,
+    mask_key: str,
+    confidence_key: str,
+    impute_weight: float,
+    mask_min: float,
+) -> None:
     target = getattr(item, task, None)
     if target is None:
         return
+    existing = getattr(item, f"mask_{task}", None)
+    imputed = getattr(item, mask_key, None)
+    imputed_flag = isinstance(imputed, dict) and imputed.get(task, False)
+
+    conf_val = None
+    conf = getattr(item, confidence_key, None)
+    if isinstance(conf, dict):
+        conf_val = conf.get(task, None)
+    if conf_val is not None:
+        try:
+            conf_val = float(conf_val)
+        except Exception:
+            conf_val = None
+
+    if existing is not None:
+        if torch.is_tensor(existing):
+            existing = existing.float()
+            if imputed_flag:
+                weight = max(mask_min, impute_weight)
+                if conf_val is not None:
+                    weight = max(weight, conf_val)
+                weight_t = torch.tensor(weight, dtype=existing.dtype, device=existing.device)
+                scaled = existing * weight_t
+                existing = torch.where(existing <= 0, weight_t, scaled)
+            else:
+                min_t = torch.tensor(mask_min, dtype=existing.dtype, device=existing.device)
+                existing = torch.where(existing <= 0, min_t, existing)
+        else:
+            try:
+                existing = float(existing)
+            except Exception:
+                existing = float(mask_min)
+            if imputed_flag:
+                weight = max(mask_min, impute_weight)
+                if conf_val is not None:
+                    weight = max(weight, conf_val)
+                existing = weight if existing <= 0 else existing * weight
+            elif existing <= 0:
+                existing = float(mask_min)
+        setattr(item, f"mask_{task}", existing)
+        return
 
     mask_value = 1.0
-    imputed = getattr(item, mask_key, None)
-    if isinstance(imputed, dict):
-        if imputed.get(task, False):
-            mask_value = 0.0
+    if imputed_flag:
+        mask_value = impute_weight
+        if conf_val is not None:
+            mask_value = max(mask_value, conf_val)
 
-    if mask_mode == "confidence":
-        conf = getattr(item, confidence_key, None)
-        if isinstance(conf, dict):
-            conf_val = conf.get(task, None)
-            if conf_val is not None:
-                try:
-                    mask_value = float(conf_val)
-                except Exception:
-                    pass
+    if mask_mode == "confidence" and conf_val is not None:
+        mask_value = conf_val
+        if imputed_flag:
+            mask_value = max(mask_value, impute_weight)
 
+    mask_value = max(mask_min, float(mask_value))
     if torch.is_tensor(target):
         mask_tensor = torch.full_like(target, float(mask_value))
     else:
@@ -403,6 +539,14 @@ def _sync_sum(value: int, device: torch.device) -> int:
     return int(count.item())
 
 
+def _sync_sum_float(value: float, device: torch.device) -> float:
+    if not dist.is_available() or not dist.is_initialized():
+        return float(value)
+    total = torch.tensor(float(value), device=device)
+    dist.all_reduce(total, op=dist.ReduceOp.SUM)
+    return float(total.item())
+
+
 def _bootstrap_ci(
     values: torch.Tensor, samples: int, ci: float, seed: int
 ) -> tuple[float, float, float]:
@@ -479,14 +623,14 @@ def _evaluate(
                 mask = mask.float()
 
             try:
-                with torch.cuda.amp.autocast(enabled=False):
+                with torch.amp.autocast('cuda',enabled=False):
                     pred = model(z=batch.z, pos=batch.pos, edge_index=batch.edge_index, batch=batch.batch).float()
             except Exception as exc:
                 # Some implicit models require grads even in eval forward.
                 if "does not require grad" in str(exc):
                     try:
                         with torch.enable_grad():
-                            with torch.cuda.amp.autocast(enabled=False):
+                            with torch.amp.autocast('cuda',enabled=False):
                                 pred = model(
                                     z=batch.z,
                                     pos=batch.pos,
@@ -745,6 +889,23 @@ def build_model(args) -> nn.Module:
     return model
 
 
+def _log_param_summary(model: nn.Module, rank: int) -> None:
+    if rank != 0:
+        return
+    total = 0
+    trainable = 0
+    lora_params = 0
+    for name, param in model.named_parameters():
+        total += param.numel()
+        if param.requires_grad:
+            trainable += param.numel()
+        if "lora" in name.lower():
+            lora_params += param.numel()
+    print(
+        f"params: total={total:,} trainable={trainable:,} lora={lora_params:,}"
+    )
+
+
 def _get_model_state(model: nn.Module, use_fsdp: bool) -> dict:
     if use_fsdp:
         from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
@@ -810,7 +971,7 @@ def save_state(
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
     scheduler: Optional[torch.optim.lr_scheduler._LRScheduler],
-    scaler: torch.cuda.amp.GradScaler,
+    scaler: torch.amp.GradScaler,
     save_path: Path,
     use_fsdp: bool,
     extra: Optional[dict] = None,
@@ -830,7 +991,7 @@ def load_state(
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
     scheduler: Optional[torch.optim.lr_scheduler._LRScheduler],
-    scaler: torch.cuda.amp.GradScaler,
+    scaler: torch.amp.GradScaler,
     resume_path: Path,
     strict: bool,
 ) -> dict:
@@ -876,7 +1037,7 @@ def main() -> None:
         default=True,
         help="Keep DataLoader workers alive between epochs.",
     )
-    parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--grad-accum", type=int, default=1)
     parser.add_argument("--grad-clip", type=float, default=0.0, help="Global grad norm clip (0 disables).")
@@ -918,8 +1079,8 @@ def main() -> None:
     parser.add_argument("--elora-path", default=None, help="Path to ELoRA repo or 'vendored'.")
 
     parser.add_argument("--use-adalora", action="store_true")
-    parser.add_argument("--adalora-r", type=int, default=8)
-    parser.add_argument("--adalora-alpha", type=int, default=32)
+    parser.add_argument("--adalora-r", type=int, default=32)
+    parser.add_argument("--adalora-alpha", type=int, default=64)
     parser.add_argument("--adalora-dropout", type=float, default=0.05)
     parser.add_argument("--adalora-tinit", type=int, default=10)
     parser.add_argument("--adalora-tfinal", type=int, default=20)
@@ -951,7 +1112,7 @@ def main() -> None:
     )
     parser.add_argument("--shampoo-momentum", type=float, default=0.0)
     parser.add_argument("--shampoo-weight-decay", type=float, default=0.0)
-    parser.add_argument("--lr-scheduler", default="none", choices=["none", "cosine", "step"])
+    parser.add_argument("--lr-scheduler", default="cosine", choices=["none", "cosine", "step"])
     parser.add_argument("--lr-step-size", type=int, default=10)
     parser.add_argument("--lr-gamma", type=float, default=0.5)
     parser.add_argument("--resume", action="store_true")
@@ -981,6 +1142,18 @@ def main() -> None:
     )
     parser.add_argument("--norm-cache", default=None, help="Optional JSON file to cache dataset mean/std.")
     parser.add_argument("--use-impute-mask", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--impute-weight",
+        type=float,
+        default=0.1,
+        help="Minimum weight for imputed targets (never zero).",
+    )
+    parser.add_argument(
+        "--mask-min",
+        type=float,
+        default=1e-6,
+        help="Lower bound for any mask value.",
+    )
     parser.add_argument("--mask-mode", default="binary", choices=["binary", "confidence"])
     parser.add_argument("--mask-key", default="field_imputed")
     parser.add_argument("--confidence-key", default="field_confidence")
@@ -1030,6 +1203,34 @@ def main() -> None:
     parser.add_argument("--split-seed", type=int, default=123)
     parser.add_argument("--split-train", type=float, default=0.8)
     parser.add_argument("--split-val", type=float, default=0.1)
+    parser.add_argument(
+        "--single-key",
+        default=None,
+        help="If set, select a single sample matching this key (using --split-key) and repeat it.",
+    )
+    parser.add_argument(
+        "--single-number",
+        type=int,
+        default=None,
+        help="If set, select a single sample with Data.number == value and repeat it.",
+    )
+    parser.add_argument(
+        "--single-first",
+        action="store_true",
+        help="Use the first valid sample found in the shard list and repeat it.",
+    )
+    parser.add_argument(
+        "--single-repeat",
+        type=int,
+        default=0,
+        help="Repeat count for the selected single sample (must be >= 1 when single mode is enabled).",
+    )
+    parser.add_argument(
+        "--single-force-all-splits",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="In single-sample mode, ignore split filtering for val/test and reuse the same sample.",
+    )
     parser.add_argument(
         "--train-use-distributed",
         action=argparse.BooleanOptionalAction,
@@ -1085,6 +1286,8 @@ def main() -> None:
         mask_mode=args.mask_mode,
         mask_key=args.mask_key,
         confidence_key=args.confidence_key,
+        impute_weight=args.impute_weight,
+        mask_min=args.mask_min,
         seed=args.seed,
         shuffle_shards=True,
         shuffle_samples=False,
@@ -1095,6 +1298,11 @@ def main() -> None:
         split_val=args.split_val,
         use_distributed=bool(args.train_use_distributed),
         skip_nonfinite=args.skip_nonfinite,
+        single_key=args.single_key,
+        single_number=args.single_number,
+        single_first=args.single_first,
+        single_repeat=args.single_repeat,
+        force_all_splits=args.single_force_all_splits,
     )
     exclude_keys = [k.strip() for k in args.exclude_keys.split(",") if k.strip()]
     loader_kwargs: dict[str, Any] = {}
@@ -1122,6 +1330,8 @@ def main() -> None:
         mask_mode=args.mask_mode,
         mask_key=args.mask_key,
         confidence_key=args.confidence_key,
+        impute_weight=args.impute_weight,
+        mask_min=args.mask_min,
         seed=args.seed,
         shuffle_shards=False,
         shuffle_samples=False,
@@ -1132,6 +1342,11 @@ def main() -> None:
         split_val=args.split_val,
         use_distributed=False,
         skip_nonfinite=args.skip_nonfinite,
+        single_key=args.single_key,
+        single_number=args.single_number,
+        single_first=args.single_first,
+        single_repeat=args.single_repeat,
+        force_all_splits=args.single_force_all_splits,
     )
     test_dataset = ShardIterable(
         shard_paths,
@@ -1139,6 +1354,8 @@ def main() -> None:
         mask_mode=args.mask_mode,
         mask_key=args.mask_key,
         confidence_key=args.confidence_key,
+        impute_weight=args.impute_weight,
+        mask_min=args.mask_min,
         seed=args.seed,
         shuffle_shards=False,
         shuffle_samples=False,
@@ -1149,6 +1366,11 @@ def main() -> None:
         split_val=args.split_val,
         use_distributed=False,
         skip_nonfinite=args.skip_nonfinite,
+        single_key=args.single_key,
+        single_number=args.single_number,
+        single_first=args.single_first,
+        single_repeat=args.single_repeat,
+        force_all_splits=args.single_force_all_splits,
     )
 
     val_loader = DataLoader(
@@ -1192,6 +1414,8 @@ def main() -> None:
                     mask_mode=args.mask_mode,
                     mask_key=args.mask_key,
                     confidence_key=args.confidence_key,
+                    impute_weight=args.impute_weight,
+                    mask_min=args.mask_min,
                     seed=args.seed,
                     shuffle_shards=False,
                     shuffle_samples=False,
@@ -1202,6 +1426,11 @@ def main() -> None:
                     split_val=args.split_val,
                     use_distributed=False,
                     skip_nonfinite=args.skip_nonfinite,
+                    single_key=args.single_key,
+                    single_number=args.single_number,
+                    single_first=args.single_first,
+                    single_repeat=args.single_repeat,
+                    force_all_splits=args.single_force_all_splits,
                 )
                 stats_loader = DataLoader(
                     stats_dataset,
@@ -1233,6 +1462,7 @@ def main() -> None:
             norm_mean, norm_std = stats_tensor[0], stats_tensor[1]
 
     model = build_model(args).to(args.device)
+    _log_param_summary(model, rank)
     if args.checkpoint:
         ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
         if isinstance(ckpt, dict):
@@ -1298,7 +1528,7 @@ def main() -> None:
 
     optimizer = _build_optimizer(args, model)
     scheduler = _build_scheduler(args, optimizer)
-    scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
+    scaler = torch.amp.GradScaler('cuda',enabled=amp_enabled)
 
     resume_epoch = 0
     global_step = 0
@@ -1317,6 +1547,8 @@ def main() -> None:
         train_dataset.set_epoch(epoch)
         model.train()
         running = 0.0
+        epoch_loss_sum = 0.0
+        epoch_loss_count = 0
         step = -1
         skipped_batches = 0
         data_iter = iter(loader)
@@ -1369,7 +1601,7 @@ def main() -> None:
                 else:
                     mask = mask.float()
 
-                with torch.cuda.amp.autocast(enabled=amp_enabled):
+                with torch.amp.autocast('cuda', enabled=amp_enabled):
                     pred = model(z=batch.z, pos=batch.pos, edge_index=batch.edge_index, batch=batch.batch).float()
 
                 if args.debug_zero_distances and step == 0 and hasattr(batch, "edge_index"):
@@ -1417,6 +1649,7 @@ def main() -> None:
                         continue
 
                 loss = ((pred - target) ** 2 * mask).sum() / mask.sum().clamp(min=1.0)
+                loss_unscaled = loss
                 loss = loss / args.grad_accum
                 if args.skip_nonfinite:
                     loss_bad = not torch.isfinite(loss).all().item()
@@ -1451,7 +1684,9 @@ def main() -> None:
                         continue
                 raise
 
-            running += loss.item()
+            running += loss_unscaled.item()
+            epoch_loss_sum += loss_unscaled.item()
+            epoch_loss_count += 1
             global_step += 1
             if rank == 0 and (global_step % args.log_every == 0):
                 avg_loss = running / max(1, args.log_every)
@@ -1477,9 +1712,9 @@ def main() -> None:
                         metrics_row["train_raw_target_samples"] = flat_raw_target
                 _append_metrics(run_dir, metrics_row)
                 if wandb_run:
-                    wandb_run.log({"train/loss": avg_loss, "lr": lr}, step=global_step)
+                    wandb_run.log({"train/step_loss": avg_loss, "lr": lr}, step=global_step)
                 if tb_writer:
-                    tb_writer.add_scalar("train/loss", avg_loss, global_step)
+                    tb_writer.add_scalar("train/step_loss", avg_loss, global_step)
                     tb_writer.add_scalar("train/lr", lr, global_step)
                 running = 0.0
 
@@ -1490,9 +1725,20 @@ def main() -> None:
         if scheduler:
             scheduler.step()
 
+        train_loss_epoch = epoch_loss_sum
+        train_loss_count = epoch_loss_count
+        if dist.is_available() and dist.is_initialized():
+            train_loss_epoch = _sync_sum_float(train_loss_epoch, args.device)
+            train_loss_count = _sync_sum(train_loss_count, args.device)
+        train_loss_epoch = train_loss_epoch / max(1, train_loss_count)
+        train_mse_epoch = train_loss_epoch
+
         if rank == 0:
             if skipped_batches:
                 print(f"epoch={epoch} skipped_batches={skipped_batches}")
+            print(
+                f"epoch={epoch} train_loss_epoch={train_loss_epoch:.6f} train_mse_epoch={train_mse_epoch:.6f}"
+            )
             save_path = run_dir / f"latest_{args.task}.pth"
             save_checkpoint(model, save_path, args.fsdp)
             if args.save_state:
@@ -1500,6 +1746,24 @@ def main() -> None:
                 extra = {"epoch": epoch + 1, "global_step": global_step}
                 save_state(model, optimizer, scheduler, scaler, state_path, args.fsdp, extra=extra)
             print(f"saved {save_path}")
+            metrics_row = {
+                "epoch": epoch,
+                "step": global_step,
+                "split": "train_epoch",
+                "train_loss_epoch": train_loss_epoch,
+                "train_mse_epoch": train_mse_epoch,
+                "lr": optimizer.param_groups[0]["lr"],
+                "skipped_batches": skipped_batches,
+            }
+            _append_metrics(run_dir, metrics_row)
+            if wandb_run:
+                wandb_run.log(
+                    {"train/epoch_loss": train_loss_epoch, "train/epoch_mse": train_mse_epoch},
+                    step=global_step,
+                )
+            if tb_writer:
+                tb_writer.add_scalar("epoch/train_loss", train_loss_epoch, epoch)
+                tb_writer.add_scalar("epoch/train_mse", train_mse_epoch, epoch)
 
         if (epoch + 1) % args.eval_every == 0 or epoch == args.epochs - 1:
             if world_size > 1 and dist.is_available() and dist.is_initialized():
@@ -1548,6 +1812,8 @@ def main() -> None:
                 metrics = {
                     "epoch": epoch,
                     "step": global_step,
+                    "train_loss_epoch": train_loss_epoch,
+                    "train_mse_epoch": train_mse_epoch,
                     "val_mse": val_metrics["mse"],
                     "val_mse_lo": val_metrics["mse_lo"],
                     "val_mse_hi": val_metrics["mse_hi"],
@@ -1602,9 +1868,10 @@ def main() -> None:
                 if wandb_run:
                     wandb_run.log(metrics, step=global_step)
                 if tb_writer:
-                    for key, value in metrics.items():
-                        if isinstance(value, (int, float)):
-                            tb_writer.add_scalar(key, value, global_step)
+                    tb_writer.add_scalar("epoch/val_mse", metrics["val_mse"], epoch)
+                    tb_writer.add_scalar("epoch/val_mae", metrics["val_mae"], epoch)
+                    tb_writer.add_scalar("epoch/test_mse", metrics["test_mse"], epoch)
+                    tb_writer.add_scalar("epoch/test_mae", metrics["test_mae"], epoch)
 
     if wandb_run:
         wandb_run.finish()
