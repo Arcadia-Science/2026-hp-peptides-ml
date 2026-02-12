@@ -220,3 +220,9 @@ scripts/run_ray_tune_remote.sh
 notes/*
 sandbox/*
 notebooks/hij_subset_metrics.ipynb
+
+commands.md
+./commands.md
+commands.md
+./commands.md
+*.commands.md

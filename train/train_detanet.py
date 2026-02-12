@@ -33,6 +33,9 @@ METRICS_HEADER = [
     "epoch",
     "step",
     "split",
+    "eval_scope",
+    "eval_batches",
+    "eval_max_batches",
     "loss",
     "lr",
     "val_mse",
@@ -595,11 +598,13 @@ def _evaluate(
     skip_nonfinite: bool,
     log_samples: bool = False,
     max_samples: int = 0,
+    max_batches: int = 0,
 ) -> dict:
     model.eval()
     mse_vals = []
     mae_vals = []
     skipped = 0
+    seen_batches = 0
     skip_counts: dict[str, int] = {}
     pred_samples = []
     target_samples = []
@@ -609,6 +614,9 @@ def _evaluate(
     raw_target_finite = []
     with torch.no_grad():
         for batch in loader:
+            if max_batches > 0 and seen_batches >= max_batches:
+                break
+            seen_batches += 1
             batch = batch.to(device)
             if skip_nonfinite and _batch_has_nonfinite(batch):
                 skipped += 1
@@ -741,7 +749,17 @@ def _evaluate(
                 print(f"evaluate: skipped_batches={skipped} skip_counts={skip_counts}")
             else:
                 print(f"evaluate: skipped_batches={skipped}")
-        metrics = {"mse": 0.0, "mse_lo": 0.0, "mse_hi": 0.0, "mae": 0.0, "mae_lo": 0.0, "mae_hi": 0.0}
+        fallback = float(os.environ.get("EMPTY_EVAL_METRIC", "1000000000000.0"))
+        metrics = {
+            "mse": fallback,
+            "mse_lo": fallback,
+            "mse_hi": fallback,
+            "mae": fallback,
+            "mae_lo": fallback,
+            "mae_hi": fallback,
+            "num_batches": seen_batches,
+            "skipped_batches": skipped,
+        }
         if log_samples and max_samples > 0:
             metrics["pred_samples"] = pred_samples
             metrics["target_samples"] = target_samples
@@ -764,6 +782,8 @@ def _evaluate(
         "mae": mae_mean,
         "mae_lo": mae_lo,
         "mae_hi": mae_hi,
+        "num_batches": seen_batches,
+        "skipped_batches": skipped,
     }
     if log_samples and max_samples > 0:
         metrics["pred_samples"] = pred_samples
@@ -1121,6 +1141,30 @@ def main() -> None:
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--registry-dir", default=None)
     parser.add_argument("--eval-every", type=int, default=20)
+    parser.add_argument(
+        "--eval-every-steps",
+        type=int,
+        default=0,
+        help="Run in-epoch validation every N global steps (0 disables).",
+    )
+    parser.add_argument(
+        "--step-eval-max-batches",
+        type=int,
+        default=0,
+        help="Cap validation batches for in-epoch evals (0 uses full validation set).",
+    )
+    parser.add_argument(
+        "--step-eval-include-test",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Also run test split during in-epoch evals.",
+    )
+    parser.add_argument(
+        "--epoch-eval-max-batches",
+        type=int,
+        default=0,
+        help="Cap validation/test batches for epoch-end evals (0 uses full splits).",
+    )
     parser.add_argument("--bootstrap-samples", type=int, default=200)
     parser.add_argument("--bootstrap-ci", type=float, default=0.95)
     parser.add_argument("--wandb", action="store_true")
@@ -1245,6 +1289,12 @@ def main() -> None:
         raise ValueError("--split-train + --split-val must be < 1.0.")
     if args.eval_every < 1:
         raise ValueError("--eval-every must be >= 1.")
+    if args.eval_every_steps < 0:
+        raise ValueError("--eval-every-steps must be >= 0.")
+    if args.step_eval_max_batches < 0:
+        raise ValueError("--step-eval-max-batches must be >= 0.")
+    if args.epoch_eval_max_batches < 0:
+        raise ValueError("--epoch-eval-max-batches must be >= 0.")
     if args.bootstrap_samples < 1:
         raise ValueError("--bootstrap-samples must be >= 1.")
 
@@ -1543,6 +1593,152 @@ def main() -> None:
         elif rank == 0:
             print(f"resume requested but checkpoint not found: {resume_path}")
 
+    def _run_eval(
+        *,
+        eval_scope: str,
+        epoch_idx: int,
+        global_step_idx: int,
+        train_loss_value: float,
+        train_mse_value: float,
+        run_test: bool,
+        max_batches: int,
+        log_samples: bool,
+    ) -> None:
+        if world_size > 1 and dist.is_available() and dist.is_initialized():
+            dist.barrier()
+        val_metrics = None
+        test_metrics = None
+        if rank == 0:
+            eval_model = model.module if hasattr(model, "module") else model
+            val_metrics = _evaluate(
+                eval_model,
+                val_loader,
+                args.task,
+                mask_name,
+                args.device,
+                base_norm,
+                per_atom,
+                norm_mean,
+                norm_std,
+                args.use_impute_mask,
+                args.bootstrap_samples,
+                args.bootstrap_ci,
+                args.seed + epoch_idx,
+                args.skip_nonfinite,
+                log_samples,
+                args.log_preds_max,
+                max_batches=max_batches,
+            )
+            if run_test:
+                test_metrics = _evaluate(
+                    eval_model,
+                    test_loader,
+                    args.task,
+                    mask_name,
+                    args.device,
+                    base_norm,
+                    per_atom,
+                    norm_mean,
+                    norm_std,
+                    args.use_impute_mask,
+                    args.bootstrap_samples,
+                    args.bootstrap_ci,
+                    args.seed + epoch_idx + 10,
+                    args.skip_nonfinite,
+                    log_samples,
+                    args.log_preds_max,
+                    max_batches=max_batches,
+                )
+        if world_size > 1 and dist.is_available() and dist.is_initialized():
+            dist.barrier()
+        if rank != 0 or val_metrics is None:
+            return
+
+        metrics = {
+            "epoch": epoch_idx,
+            "step": global_step_idx,
+            "eval_scope": eval_scope,
+            "eval_batches": val_metrics.get("num_batches", 0),
+            "eval_max_batches": max_batches,
+            "train_loss_epoch": train_loss_value,
+            "train_mse_epoch": train_mse_value,
+            "val_mse": val_metrics["mse"],
+            "val_mse_lo": val_metrics["mse_lo"],
+            "val_mse_hi": val_metrics["mse_hi"],
+            "val_mae": val_metrics["mae"],
+            "val_mae_lo": val_metrics["mae_lo"],
+            "val_mae_hi": val_metrics["mae_hi"],
+        }
+        if run_test and test_metrics is not None:
+            metrics.update(
+                {
+                    "test_mse": test_metrics["mse"],
+                    "test_mse_lo": test_metrics["mse_lo"],
+                    "test_mse_hi": test_metrics["mse_hi"],
+                    "test_mae": test_metrics["mae"],
+                    "test_mae_lo": test_metrics["mae_lo"],
+                    "test_mae_hi": test_metrics["mae_hi"],
+                }
+            )
+
+        if log_samples:
+            val_pred_samples = val_metrics.get("pred_samples", [])
+            val_target_samples = val_metrics.get("target_samples", [])
+            val_raw_pred_samples = val_metrics.get("raw_pred_samples", [])
+            val_raw_target_samples = val_metrics.get("raw_target_samples", [])
+            val_raw_pred_finite = val_metrics.get("raw_pred_finite", [])
+            val_raw_target_finite = val_metrics.get("raw_target_finite", [])
+            val_skip_counts = val_metrics.get("skip_counts", {})
+            metrics["val_pred_samples"] = val_pred_samples
+            metrics["val_target_samples"] = val_target_samples
+            metrics["val_raw_pred_samples"] = val_raw_pred_samples
+            metrics["val_raw_target_samples"] = val_raw_target_samples
+            metrics["val_raw_pred_finite"] = val_raw_pred_finite
+            metrics["val_raw_target_finite"] = val_raw_target_finite
+            if val_skip_counts:
+                metrics["val_skip_counts"] = val_skip_counts
+            if val_pred_samples or val_target_samples:
+                print(f"val_pred_target_samples={list(zip(val_pred_samples, val_target_samples))}")
+            if run_test and test_metrics is not None:
+                test_pred_samples = test_metrics.get("pred_samples", [])
+                test_target_samples = test_metrics.get("target_samples", [])
+                test_raw_pred_samples = test_metrics.get("raw_pred_samples", [])
+                test_raw_target_samples = test_metrics.get("raw_target_samples", [])
+                test_raw_pred_finite = test_metrics.get("raw_pred_finite", [])
+                test_raw_target_finite = test_metrics.get("raw_target_finite", [])
+                test_skip_counts = test_metrics.get("skip_counts", {})
+                metrics["test_pred_samples"] = test_pred_samples
+                metrics["test_target_samples"] = test_target_samples
+                metrics["test_raw_pred_samples"] = test_raw_pred_samples
+                metrics["test_raw_target_samples"] = test_raw_target_samples
+                metrics["test_raw_pred_finite"] = test_raw_pred_finite
+                metrics["test_raw_target_finite"] = test_raw_target_finite
+                if test_skip_counts:
+                    metrics["test_skip_counts"] = test_skip_counts
+                if test_pred_samples or test_target_samples:
+                    print(f"test_pred_target_samples={list(zip(test_pred_samples, test_target_samples))}")
+
+        _append_metrics(run_dir, metrics)
+        print(
+            f"{eval_scope}_eval epoch={epoch_idx} step={global_step_idx} "
+            f"val_mse={metrics['val_mse']:.6g} val_mae={metrics['val_mae']:.6g} "
+            f"batches={metrics.get('eval_batches', 0)}"
+        )
+        if wandb_run:
+            wandb_run.log(metrics, step=global_step_idx)
+        if tb_writer:
+            if eval_scope == "epoch":
+                x_val = epoch_idx
+                prefix = "epoch"
+            else:
+                x_val = global_step_idx
+                prefix = "step_eval"
+            tb_writer.add_scalar(f"{prefix}/val_mse", metrics["val_mse"], x_val)
+            tb_writer.add_scalar(f"{prefix}/val_mae", metrics["val_mae"], x_val)
+            if run_test and "test_mse" in metrics:
+                tb_writer.add_scalar(f"{prefix}/test_mse", metrics["test_mse"], x_val)
+                tb_writer.add_scalar(f"{prefix}/test_mae", metrics["test_mae"], x_val)
+
     for epoch in range(resume_epoch, args.epochs):
         train_dataset.set_epoch(epoch)
         model.train()
@@ -1718,6 +1914,20 @@ def main() -> None:
                     tb_writer.add_scalar("train/lr", lr, global_step)
                 running = 0.0
 
+            if args.eval_every_steps > 0 and global_step > 0 and (global_step % args.eval_every_steps == 0):
+                train_loss_so_far = epoch_loss_sum / max(1, epoch_loss_count)
+                _run_eval(
+                    eval_scope="step",
+                    epoch_idx=epoch,
+                    global_step_idx=global_step,
+                    train_loss_value=train_loss_so_far,
+                    train_mse_value=train_loss_so_far,
+                    run_test=bool(args.step_eval_include_test),
+                    max_batches=args.step_eval_max_batches,
+                    log_samples=False,
+                )
+                model.train()
+
         if step >= 0 and (step + 1) % args.grad_accum != 0:
             scaler.step(optimizer)
             scaler.update()
@@ -1766,112 +1976,16 @@ def main() -> None:
                 tb_writer.add_scalar("epoch/train_mse", train_mse_epoch, epoch)
 
         if (epoch + 1) % args.eval_every == 0 or epoch == args.epochs - 1:
-            if world_size > 1 and dist.is_available() and dist.is_initialized():
-                dist.barrier()
-            if rank == 0:
-                eval_model = model.module if hasattr(model, "module") else model
-                val_metrics = _evaluate(
-                    eval_model,
-                    val_loader,
-                    args.task,
-                    mask_name,
-                    args.device,
-                    base_norm,
-                    per_atom,
-                    norm_mean,
-                    norm_std,
-                    args.use_impute_mask,
-                    args.bootstrap_samples,
-                    args.bootstrap_ci,
-                    args.seed + epoch,
-                    args.skip_nonfinite,
-                    args.log_preds,
-                    args.log_preds_max,
-                )
-                test_metrics = _evaluate(
-                    eval_model,
-                    test_loader,
-                    args.task,
-                    mask_name,
-                    args.device,
-                    base_norm,
-                    per_atom,
-                    norm_mean,
-                    norm_std,
-                    args.use_impute_mask,
-                    args.bootstrap_samples,
-                    args.bootstrap_ci,
-                    args.seed + epoch + 10,
-                    args.skip_nonfinite,
-                    args.log_preds,
-                    args.log_preds_max,
-                )
-            if world_size > 1 and dist.is_available() and dist.is_initialized():
-                dist.barrier()
-            if rank == 0:
-                metrics = {
-                    "epoch": epoch,
-                    "step": global_step,
-                    "train_loss_epoch": train_loss_epoch,
-                    "train_mse_epoch": train_mse_epoch,
-                    "val_mse": val_metrics["mse"],
-                    "val_mse_lo": val_metrics["mse_lo"],
-                    "val_mse_hi": val_metrics["mse_hi"],
-                    "val_mae": val_metrics["mae"],
-                    "val_mae_lo": val_metrics["mae_lo"],
-                    "val_mae_hi": val_metrics["mae_hi"],
-                    "test_mse": test_metrics["mse"],
-                    "test_mse_lo": test_metrics["mse_lo"],
-                    "test_mse_hi": test_metrics["mse_hi"],
-                    "test_mae": test_metrics["mae"],
-                    "test_mae_lo": test_metrics["mae_lo"],
-                    "test_mae_hi": test_metrics["mae_hi"],
-                }
-                if args.log_preds:
-                    val_pred_samples = val_metrics.get("pred_samples", [])
-                    val_target_samples = val_metrics.get("target_samples", [])
-                    test_pred_samples = test_metrics.get("pred_samples", [])
-                    test_target_samples = test_metrics.get("target_samples", [])
-                    val_raw_pred_samples = val_metrics.get("raw_pred_samples", [])
-                    val_raw_target_samples = val_metrics.get("raw_target_samples", [])
-                    val_raw_pred_finite = val_metrics.get("raw_pred_finite", [])
-                    val_raw_target_finite = val_metrics.get("raw_target_finite", [])
-                    val_skip_counts = val_metrics.get("skip_counts", {})
-                    test_raw_pred_samples = test_metrics.get("raw_pred_samples", [])
-                    test_raw_target_samples = test_metrics.get("raw_target_samples", [])
-                    test_raw_pred_finite = test_metrics.get("raw_pred_finite", [])
-                    test_raw_target_finite = test_metrics.get("raw_target_finite", [])
-                    test_skip_counts = test_metrics.get("skip_counts", {})
-                    metrics["val_pred_samples"] = val_pred_samples
-                    metrics["val_target_samples"] = val_target_samples
-                    metrics["test_pred_samples"] = test_pred_samples
-                    metrics["test_target_samples"] = test_target_samples
-                    metrics["val_raw_pred_samples"] = val_raw_pred_samples
-                    metrics["val_raw_target_samples"] = val_raw_target_samples
-                    metrics["val_raw_pred_finite"] = val_raw_pred_finite
-                    metrics["val_raw_target_finite"] = val_raw_target_finite
-                    if val_skip_counts:
-                        metrics["val_skip_counts"] = val_skip_counts
-                    metrics["test_raw_pred_samples"] = test_raw_pred_samples
-                    metrics["test_raw_target_samples"] = test_raw_target_samples
-                    metrics["test_raw_pred_finite"] = test_raw_pred_finite
-                    metrics["test_raw_target_finite"] = test_raw_target_finite
-                    if test_skip_counts:
-                        metrics["test_skip_counts"] = test_skip_counts
-                    if val_pred_samples or val_target_samples:
-                        val_pairs = list(zip(val_pred_samples, val_target_samples))
-                        print(f"val_pred_target_samples={val_pairs}")
-                    if test_pred_samples or test_target_samples:
-                        test_pairs = list(zip(test_pred_samples, test_target_samples))
-                        print(f"test_pred_target_samples={test_pairs}")
-                _append_metrics(run_dir, metrics)
-                if wandb_run:
-                    wandb_run.log(metrics, step=global_step)
-                if tb_writer:
-                    tb_writer.add_scalar("epoch/val_mse", metrics["val_mse"], epoch)
-                    tb_writer.add_scalar("epoch/val_mae", metrics["val_mae"], epoch)
-                    tb_writer.add_scalar("epoch/test_mse", metrics["test_mse"], epoch)
-                    tb_writer.add_scalar("epoch/test_mae", metrics["test_mae"], epoch)
+            _run_eval(
+                eval_scope="epoch",
+                epoch_idx=epoch,
+                global_step_idx=global_step,
+                train_loss_value=train_loss_epoch,
+                train_mse_value=train_mse_epoch,
+                run_test=True,
+                max_batches=args.epoch_eval_max_batches,
+                log_samples=bool(args.log_preds),
+            )
 
     if wandb_run:
         wandb_run.finish()

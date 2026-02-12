@@ -7,6 +7,7 @@ HOST="${HOST:-ec2-user@your-instance.compute.amazonaws.com}"
 LOCAL_REPO="${LOCAL_REPO:-$PWD}"
 REMOTE_REPO="${REMOTE_REPO:-/fsx/repos/hp-proteins-ml}"
 PY="${PY:-/home/ec2-user/miniforge3/envs/hp/bin/python}"
+SSH_OPTS="${SSH_OPTS:--o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/codex_known_hosts}"
 RUN_PREFIX="${RUN_PREFIX:-tune-hij}"
 DETACH="${DETACH:-1}"
 START_TB="${START_TB:-1}"
@@ -21,32 +22,41 @@ STAGE_SHARDS_PER_DATASET="${STAGE_SHARDS_PER_DATASET:-0}"
 STAGE_TOTAL_SHARDS="${STAGE_TOTAL_SHARDS:-0}"
 STAGE_SEED="${STAGE_SEED:-123}"
 MIN_SAMPLES="${MIN_SAMPLES:-10}"
+EVAL_EVERY_STEPS="${EVAL_EVERY_STEPS:-0}"
+STEP_EVAL_MAX_BATCHES="${STEP_EVAL_MAX_BATCHES:-0}"
+STEP_EVAL_INCLUDE_TEST="${STEP_EVAL_INCLUDE_TEST:-0}"
+EPOCH_EVAL_MAX_BATCHES="${EPOCH_EVAL_MAX_BATCHES:-0}"
 # ================================
 
 echo ">> Using HOST=$HOST"
-echo ">> Ray dashboard tunnel: ssh -i ${KEY} -N -L 8265:127.0.0.1:8265 ${HOST}"
-echo ">> TensorBoard tunnel: ssh -i ${KEY} -N -L 6006:127.0.0.1:6006 ${HOST}"
+echo ">> Ray dashboard tunnel: ssh ${SSH_OPTS} -i ${KEY} -N -L 8265:127.0.0.1:8265 ${HOST}"
+echo ">> TensorBoard tunnel: ssh ${SSH_OPTS} -i ${KEY} -N -L 6006:127.0.0.1:6006 ${HOST}"
 
 echo ">> Sync code changes to FSx repo"
-rsync -avz -e "ssh -i ${KEY}" \
+rsync -avz -e "ssh ${SSH_OPTS} -i ${KEY}" \
   "${LOCAL_REPO}/train/train_tune.py" \
   "${HOST}:${REMOTE_REPO}/train/train_tune.py"
-rsync -avz -e "ssh -i ${KEY}" \
+rsync -avz -e "ssh ${SSH_OPTS} -i ${KEY}" \
   "${LOCAL_REPO}/train/train_lightning.py" \
   "${HOST}:${REMOTE_REPO}/train/train_lightning.py"
-rsync -avz -e "ssh -i ${KEY}" \
+rsync -avz -e "ssh ${SSH_OPTS} -i ${KEY}" \
   "${LOCAL_REPO}/train/train_detanet.py" \
   "${HOST}:${REMOTE_REPO}/train/train_detanet.py"
-rsync -avz -e "ssh -i ${KEY}" \
+rsync -avz -e "ssh ${SSH_OPTS} -i ${KEY}" \
   "${LOCAL_REPO}/capsule-3259363/code/detanet_model/detanet.py" \
   "${HOST}:${REMOTE_REPO}/capsule-3259363/code/detanet_model/detanet.py"
-rsync -avz -e "ssh -i ${KEY}" \
+rsync -avz -e "ssh ${SSH_OPTS} -i ${KEY}" \
   "${LOCAL_REPO}/capsule-3259363/code/detanet_model/modules/radial_basis.py" \
   "${HOST}:${REMOTE_REPO}/capsule-3259363/code/detanet_model/modules/radial_basis.py"
+if [ -f "${LOCAL_REPO}/scripts/summarize_tune_metrics.py" ]; then
+  rsync -avz -e "ssh ${SSH_OPTS} -i ${KEY}" \
+    "${LOCAL_REPO}/scripts/summarize_tune_metrics.py" \
+    "${HOST}:${REMOTE_REPO}/scripts/summarize_tune_metrics.py"
+fi
 
 echo ">> Run remote Ray Tune"
-ssh -i "${KEY}" "${HOST}" \
-  "PY='$PY' REMOTE_REPO='$REMOTE_REPO' RUN_PREFIX='$RUN_PREFIX' DETACH='$DETACH' START_TB='$START_TB' INSTALL_PROFILING='$INSTALL_PROFILING' CLEAN_TB='$CLEAN_TB' SMOKE='$SMOKE' SMOKE_SHARDS='${SMOKE_SHARDS:-}' SMOKE_ITEMS='${SMOKE_ITEMS:-}' SMOKE_ITEMS_PER_SHARD='${SMOKE_ITEMS_PER_SHARD:-}' SMOKE_SPLIT_KEY='${SMOKE_SPLIT_KEY:-}' SMOKE_SPLIT_TRAIN='${SMOKE_SPLIT_TRAIN:-}' SMOKE_SPLIT_VAL='${SMOKE_SPLIT_VAL:-}' SMOKE_SPLIT_SEED='${SMOKE_SPLIT_SEED:-}' LOG_PREDS_MAX='${LOG_PREDS_MAX:-}' TRAIN_USE_DISTRIBUTED='${TRAIN_USE_DISTRIBUTED:-}' LOG_TRAIN_PREDS='${LOG_TRAIN_PREDS:-}' EPOCHS='${EPOCHS:-}' EVAL_EVERY='${EVAL_EVERY:-}' MAX_T='${MAX_T:-}' STAGE_SHARDS='${STAGE_SHARDS:-}' STAGE_DIR='${STAGE_DIR:-}' STAGE_LIMIT_GB='${STAGE_LIMIT_GB:-}' SHARD_ROOTS='${SHARD_ROOTS:-}' STAGE_SHARDS_PER_DATASET='${STAGE_SHARDS_PER_DATASET:-}' STAGE_TOTAL_SHARDS='${STAGE_TOTAL_SHARDS:-}' STAGE_SEED='${STAGE_SEED:-}' MIN_SAMPLES='${MIN_SAMPLES:-}' NUM_WORKERS='${NUM_WORKERS:-}' LOADER_TIMEOUT='${LOADER_TIMEOUT:-}' PREFETCH_FACTOR='${PREFETCH_FACTOR:-}' PERSISTENT_WORKERS='${PERSISTENT_WORKERS:-}' LOG_EVERY='${LOG_EVERY:-}' DDP_TIMEOUT='${DDP_TIMEOUT:-}' GPUS_PER_TRIAL='${GPUS_PER_TRIAL:-}' MAX_CONCURRENT='${MAX_CONCURRENT:-}' NUM_SAMPLES='${NUM_SAMPLES:-}' FIXED_LR='${FIXED_LR:-}' FIXED_BATCH_SIZE='${FIXED_BATCH_SIZE:-}' FIXED_ADALORA_R='${FIXED_ADALORA_R:-}' FIXED_ADALORA_ALPHA='${FIXED_ADALORA_ALPHA:-}' bash -s" <<'REMOTE'
+ssh ${SSH_OPTS} -i "${KEY}" "${HOST}" \
+  "PY='$PY' REMOTE_REPO='$REMOTE_REPO' RUN_PREFIX='$RUN_PREFIX' DETACH='$DETACH' START_TB='$START_TB' INSTALL_PROFILING='$INSTALL_PROFILING' CLEAN_TB='$CLEAN_TB' SMOKE='$SMOKE' SMOKE_SHARDS='${SMOKE_SHARDS:-}' SMOKE_ITEMS='${SMOKE_ITEMS:-}' SMOKE_ITEMS_PER_SHARD='${SMOKE_ITEMS_PER_SHARD:-}' SMOKE_SPLIT_KEY='${SMOKE_SPLIT_KEY:-}' SMOKE_SPLIT_TRAIN='${SMOKE_SPLIT_TRAIN:-}' SMOKE_SPLIT_VAL='${SMOKE_SPLIT_VAL:-}' SMOKE_SPLIT_SEED='${SMOKE_SPLIT_SEED:-}' LOG_PREDS_MAX='${LOG_PREDS_MAX:-}' TRAIN_USE_DISTRIBUTED='${TRAIN_USE_DISTRIBUTED:-}' LOG_TRAIN_PREDS='${LOG_TRAIN_PREDS:-}' EPOCHS='${EPOCHS:-}' EVAL_EVERY='${EVAL_EVERY:-}' EVAL_EVERY_STEPS='${EVAL_EVERY_STEPS:-}' STEP_EVAL_MAX_BATCHES='${STEP_EVAL_MAX_BATCHES:-}' STEP_EVAL_INCLUDE_TEST='${STEP_EVAL_INCLUDE_TEST:-}' EPOCH_EVAL_MAX_BATCHES='${EPOCH_EVAL_MAX_BATCHES:-}' MAX_T='${MAX_T:-}' STAGE_SHARDS='${STAGE_SHARDS:-}' STAGE_DIR='${STAGE_DIR:-}' STAGE_LIMIT_GB='${STAGE_LIMIT_GB:-}' SHARD_ROOTS='${SHARD_ROOTS:-}' STAGE_SHARDS_PER_DATASET='${STAGE_SHARDS_PER_DATASET:-}' STAGE_TOTAL_SHARDS='${STAGE_TOTAL_SHARDS:-}' STAGE_SEED='${STAGE_SEED:-}' MIN_SAMPLES='${MIN_SAMPLES:-}' NUM_WORKERS='${NUM_WORKERS:-}' LOADER_TIMEOUT='${LOADER_TIMEOUT:-}' PREFETCH_FACTOR='${PREFETCH_FACTOR:-}' PERSISTENT_WORKERS='${PERSISTENT_WORKERS:-}' LOG_EVERY='${LOG_EVERY:-}' DDP_TIMEOUT='${DDP_TIMEOUT:-}' GPUS_PER_TRIAL='${GPUS_PER_TRIAL:-}' MAX_CONCURRENT='${MAX_CONCURRENT:-}' NUM_SAMPLES='${NUM_SAMPLES:-}' FIXED_LR='${FIXED_LR:-}' FIXED_BATCH_SIZE='${FIXED_BATCH_SIZE:-}' FIXED_ADALORA_R='${FIXED_ADALORA_R:-}' FIXED_ADALORA_ALPHA='${FIXED_ADALORA_ALPHA:-}' bash -s" <<'REMOTE'
 set -euo pipefail
 
 PY="$PY"
@@ -87,6 +97,10 @@ DDP_TIMEOUT="${DDP_TIMEOUT:-1800}"
 LOG_PREDS_MAX="${LOG_PREDS_MAX:-5}"
 EPOCHS="${EPOCHS:-5}"
 EVAL_EVERY="${EVAL_EVERY:-1}"
+EVAL_EVERY_STEPS="${EVAL_EVERY_STEPS:-0}"
+STEP_EVAL_MAX_BATCHES="${STEP_EVAL_MAX_BATCHES:-0}"
+STEP_EVAL_INCLUDE_TEST="${STEP_EVAL_INCLUDE_TEST:-0}"
+EPOCH_EVAL_MAX_BATCHES="${EPOCH_EVAL_MAX_BATCHES:-0}"
 MAX_T="${MAX_T:-5}"
 SCHEDULER="${SCHEDULER:-asha}"
 FIXED_LR="${FIXED_LR:-}"
@@ -118,6 +132,24 @@ fi
 import ray
 print("Ray version:", ray.__version__)
 PY
+
+# Ensure Ray Tune deps are available (ray[tune] + pyarrow).
+if ! "$PY" - <<'PY' 2>/dev/null
+from ray import tune  # noqa: F401
+import pyarrow  # noqa: F401
+PY
+then
+  echo ">> Installing Ray Tune dependencies (ray[tune], pyarrow)"
+  "$PY" -m pip install --quiet 'ray[tune]' pyarrow
+fi
+if ! "$PY" - <<'PY' 2>/dev/null
+from ray import tune  # noqa: F401
+import pyarrow  # noqa: F401
+PY
+then
+  echo "ERROR: Ray Tune dependencies missing (ray[tune]/pyarrow)."
+  exit 1
+fi
 
 # Ensure pytorch-optimizer (pytorch_optimizer / torch_optimizer) is available.
 if ! "$PY" - <<'PY' 2>/dev/null
@@ -167,6 +199,24 @@ fi
 import peft  # noqa: F401
 print("peft OK")
 PY
+
+# Ensure ELoRA vendored e3nn dependency is available.
+if ! "$PY" - <<'PY' 2>/dev/null
+import importlib.util
+raise SystemExit(0 if importlib.util.find_spec("opt_einsum_fx") else 1)
+PY
+then
+  echo ">> Installing opt-einsum-fx (required by vendored ELoRA/e3nn)"
+  "$PY" -m pip install --quiet opt-einsum-fx
+fi
+if ! "$PY" - <<'PY' 2>/dev/null
+import importlib.util
+raise SystemExit(0 if importlib.util.find_spec("opt_einsum_fx") else 1)
+PY
+then
+  echo "ERROR: opt-einsum-fx not available in env."
+  exit 1
+fi
 
 if [ "$INSTALL_PROFILING" = "1" ]; then
   echo ">> Installing profiling tools (py-spy, memray)"
@@ -684,6 +734,15 @@ PY
     LOG_EVERY=1
   fi
   echo ">> SMOKE_ITEMS_PER_SHARD: using shard list $SHARD_LIST split_key=$SPLIT_KEY train=$SPLIT_TRAIN val=$SPLIT_VAL"
+  cat > /tmp/param_space.json <<'JSON'
+{
+  "lr": {"type":"choice","values":[1e-4]},
+  "batch_size": {"type":"choice","values":[1]},
+  "optimizer": {"type":"choice","values":["pt_shampoo"]},
+  "adalora_r": {"type":"choice","values":[32]},
+  "adalora_alpha": {"type":"choice","values":[64]}
+}
+JSON
 elif [ "$SMOKE" = "1" ] && [ "${SMOKE_ITEMS}" -gt 0 ]; then
   cat > /tmp/param_space.json <<'JSON'
 {
@@ -737,6 +796,10 @@ export SPLIT_TRAIN
 export SPLIT_VAL
 export EPOCHS
 export EVAL_EVERY
+export EVAL_EVERY_STEPS
+export STEP_EVAL_MAX_BATCHES
+export STEP_EVAL_INCLUDE_TEST
+export EPOCH_EVAL_MAX_BATCHES
 export LOG_EVERY
 export DDP_TIMEOUT
 export NUM_WORKERS
@@ -774,6 +837,12 @@ args = [
     os.environ["EPOCHS"],
     "--eval-every",
     os.environ["EVAL_EVERY"],
+    "--eval-every-steps",
+    os.environ.get("EVAL_EVERY_STEPS", "0"),
+    "--step-eval-max-batches",
+    os.environ.get("STEP_EVAL_MAX_BATCHES", "0"),
+    "--epoch-eval-max-batches",
+    os.environ.get("EPOCH_EVAL_MAX_BATCHES", "0"),
     "--log-every",
     os.environ["LOG_EVERY"],
     "--amp",
@@ -808,6 +877,8 @@ if os.environ.get("LOG_PREDS") == "1":
     args += ["--log-preds", "--log-preds-max", os.environ.get("LOG_PREDS_MAX", "5")]
 if os.environ.get("LOG_TRAIN_PREDS") == "1":
     args += ["--log-train-preds"]
+if os.environ.get("STEP_EVAL_INCLUDE_TEST", "0") in ("1", "true", "True"):
+    args += ["--step-eval-include-test"]
 if os.environ.get("TRAIN_USE_DISTRIBUTED", "1") in ("0", "false", "False"):
     args += ["--no-train-use-distributed"]
 

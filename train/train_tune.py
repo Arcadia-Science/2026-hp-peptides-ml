@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import subprocess
 import sys
@@ -69,6 +70,26 @@ def _iter_new_lines(path: Path, start_pos: int) -> Iterable[tuple[int, str]]:
     return [(new_pos, line) for line in data.splitlines()]
 
 
+def _terminate_process(proc: subprocess.Popen, *, kill_after: float = 30.0) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        proc.terminate()
+        proc.wait(timeout=kill_after)
+    except Exception:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def _is_finite_number(value: Any) -> bool:
+    if not isinstance(value, (int, float)):
+        return False
+    if isinstance(value, bool):
+        return False
+    return math.isfinite(float(value))
+
+
 def main() -> None:
     repo_root = Path(__file__).resolve().parent.parent
     _ensure_ray_runtime_env(str(repo_root))
@@ -94,6 +115,48 @@ def main() -> None:
     parser.add_argument("--max-t", type=int, default=None)
     parser.add_argument("--grace-period", type=int, default=1)
     parser.add_argument("--reduction-factor", type=int, default=2)
+    parser.add_argument(
+        "--trial-timeout-seconds",
+        type=int,
+        default=0,
+        help="Per-trial wall-clock timeout in seconds (0 disables).",
+    )
+    parser.add_argument(
+        "--flat-loss-threshold",
+        type=float,
+        default=1e-12,
+        help="Treat train_loss_epoch <= threshold as invalid/flat loss.",
+    )
+    parser.add_argument(
+        "--flat-loss-patience",
+        type=int,
+        default=2,
+        help="Abort trial after this many consecutive flat-loss eval reports (0 disables).",
+    )
+    parser.add_argument(
+        "--max-no-metric-seconds",
+        type=int,
+        default=900,
+        help="Abort trial if no metric rows are reported for this long (0 disables).",
+    )
+    parser.add_argument(
+        "--overfit-ratio",
+        type=float,
+        default=1.2,
+        help="Overfitting trigger: val metric exceeds best_val * overfit_ratio.",
+    )
+    parser.add_argument(
+        "--overfit-train-ratio",
+        type=float,
+        default=0.9,
+        help="Overfitting trigger: train loss drops below best_train * overfit_train_ratio.",
+    )
+    parser.add_argument(
+        "--overfit-patience",
+        type=int,
+        default=0,
+        help="Abort trial after this many consecutive overfitting triggers (0 disables).",
+    )
     # Kept for compatibility with existing launcher flags (unused in trainable-based flow).
     parser.add_argument("--best-copy", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--best-dir", default="best")
@@ -113,12 +176,18 @@ def main() -> None:
     scheduler = None
     if args.scheduler == "asha":
         scheduler = ASHAScheduler(
+            time_attr="epoch",
+            metric=args.metric,
+            mode=args.mode,
             max_t=args.max_t or args.num_samples,
             grace_period=args.grace_period,
             reduction_factor=args.reduction_factor,
         )
     elif args.scheduler == "hyperband":
         scheduler = HyperBandScheduler(
+            time_attr="epoch",
+            metric=args.metric,
+            mode=args.mode,
             max_t=args.max_t or args.num_samples,
             reduction_factor=args.reduction_factor,
         )
@@ -208,23 +277,131 @@ def main() -> None:
 
             metrics_path = run_dir / "metrics.jsonl"
             last_pos = 0
+            trial_start = time.monotonic()
+            last_metric_time = trial_start
+            saw_metric = False
+            flat_loss_streak = 0
+            best_metric = float("inf")
+            best_train_loss = float("inf")
+            overfit_streak = 0
             while proc.poll() is None:
+                now = time.monotonic()
+                if args.trial_timeout_seconds > 0 and (now - trial_start) > args.trial_timeout_seconds:
+                    _terminate_process(proc)
+                    raise RuntimeError(
+                        f"Trial timeout after {args.trial_timeout_seconds}s. "
+                        f"See {log_path} and {metrics_path}"
+                    )
                 for pos, line in _iter_new_lines(metrics_path, last_pos):
                     last_pos = pos
                     try:
                         row = json.loads(line)
                     except Exception:
                         continue
-                    metrics = {
-                        k: v
-                        for k, v in row.items()
-                        if isinstance(v, (int, float))
-                    }
-                    if metrics:
-                        if args.metric and args.metric not in metrics:
-                            metrics[args.metric] = float("nan")
-                        tune.report(metrics)
+                    metric_value = row.get(args.metric)
+                    if args.metric in row and not _is_finite_number(metric_value):
+                        _terminate_process(proc)
+                        raise RuntimeError(
+                            f"Non-finite {args.metric} reported by trial. "
+                            f"See {log_path} and {metrics_path}"
+                        )
+                    # Only report rows that actually contain the tuned metric.
+                    if not _is_finite_number(metric_value):
+                        continue
+
+                    metrics = {k: v for k, v in row.items() if _is_finite_number(v)}
+                    if not metrics:
+                        continue
+
+                    saw_metric = True
+                    last_metric_time = now
+
+                    train_loss_epoch = row.get("train_loss_epoch")
+                    train_loss_value = None
+                    if _is_finite_number(train_loss_epoch):
+                        train_loss_value = float(train_loss_epoch)
+                        if train_loss_value <= args.flat_loss_threshold:
+                            flat_loss_streak += 1
+                        else:
+                            flat_loss_streak = 0
+                    else:
+                        flat_loss_streak = 0
+
+                    if args.flat_loss_patience > 0 and flat_loss_streak >= args.flat_loss_patience:
+                        _terminate_process(proc)
+                        raise RuntimeError(
+                            "Detected flat/near-zero training loss for consecutive eval epochs; "
+                            f"threshold={args.flat_loss_threshold}, streak={flat_loss_streak}. "
+                            f"See {log_path} and {metrics_path}"
+                        )
+
+                    metric_float = float(metric_value)
+                    if metric_float < best_metric:
+                        best_metric = metric_float
+                        if train_loss_value is not None:
+                            best_train_loss = min(best_train_loss, train_loss_value)
+                        overfit_streak = 0
+                    elif (
+                        args.overfit_patience > 0
+                        and train_loss_value is not None
+                        and math.isfinite(best_train_loss)
+                        and best_train_loss < float("inf")
+                        and metric_float > best_metric * args.overfit_ratio
+                        and train_loss_value < best_train_loss * args.overfit_train_ratio
+                    ):
+                        overfit_streak += 1
+                        if overfit_streak >= args.overfit_patience:
+                            _terminate_process(proc)
+                            raise RuntimeError(
+                                "Detected sustained overfitting pattern; "
+                                f"val={metric_float:.6g}, best_val={best_metric:.6g}, "
+                                f"train={train_loss_value:.6g}, best_train={best_train_loss:.6g}. "
+                                f"See {log_path} and {metrics_path}"
+                            )
+                    else:
+                        overfit_streak = 0
+
+                    tune.report(metrics)
+
+                if (
+                    args.max_no_metric_seconds > 0
+                    and not saw_metric
+                    and (now - trial_start) > args.max_no_metric_seconds
+                ):
+                    _terminate_process(proc)
+                    raise RuntimeError(
+                        "No valid metric rows were reported in time. "
+                        f"threshold={args.max_no_metric_seconds}s. "
+                        f"See {log_path} and {metrics_path}"
+                    )
+                if (
+                    args.max_no_metric_seconds > 0
+                    and saw_metric
+                    and (now - last_metric_time) > args.max_no_metric_seconds
+                ):
+                    _terminate_process(proc)
+                    raise RuntimeError(
+                        "Metric reporting stalled. "
+                        f"threshold={args.max_no_metric_seconds}s. "
+                        f"See {log_path} and {metrics_path}"
+                    )
                 time.sleep(2)
+
+            # Drain any buffered metric lines after process exits.
+            for pos, line in _iter_new_lines(metrics_path, last_pos):
+                last_pos = pos
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                metric_value = row.get(args.metric)
+                if args.metric in row and not _is_finite_number(metric_value):
+                    continue
+                if not _is_finite_number(metric_value):
+                    continue
+                metrics = {k: v for k, v in row.items() if _is_finite_number(v)}
+                if metrics:
+                    tune.report(metrics)
 
             if proc.returncode != 0:
                 raise RuntimeError(f"Training failed with exit code {proc.returncode}. See {log_path}")
@@ -234,16 +411,19 @@ def main() -> None:
         {"cpu": args.cpus_per_trial, "gpu": args.gpus_per_trial},
     )
 
+    tune_config_kwargs: Dict[str, Any] = {
+        "num_samples": args.num_samples,
+        "max_concurrent_trials": args.max_concurrent,
+        "scheduler": scheduler,
+    }
+    if scheduler is None:
+        tune_config_kwargs["metric"] = args.metric
+        tune_config_kwargs["mode"] = args.mode
+
     tuner = tune.Tuner(
         trainable,
         param_space=tune_space,
-        tune_config=TuneConfig(
-            num_samples=args.num_samples,
-            max_concurrent_trials=args.max_concurrent,
-            metric=args.metric,
-            mode=args.mode,
-            scheduler=scheduler,
-        ),
+        tune_config=TuneConfig(**tune_config_kwargs),
         run_config=tune.RunConfig(
             name=args.run_prefix,
             storage_path=args.local_dir,
