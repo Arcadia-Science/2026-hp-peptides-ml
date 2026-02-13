@@ -12,7 +12,7 @@ Supporting services:
 - **Redis**: response cache for datapoints and predictions.
 - **Parquet storage**: geometry data stored as Parquet shards under `data/processed/`.
 
-## High-Level Diagram
+### High-Level Diagram
 ```
 Client
   |
