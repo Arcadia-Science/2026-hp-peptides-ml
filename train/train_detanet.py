@@ -295,7 +295,11 @@ class ShardIterable(IterableDataset):
         )
 
     def _passes_split(self, item) -> bool:
-        if self.force_all_splits or self.split == "all":
+        # Only bypass split filtering in explicit single-sample mode.
+        # In normal training/eval runs, always honor train/val/test split.
+        if self.split == "all":
+            return True
+        if self.force_all_splits and self._single_mode():
             return True
         key = _resolve_split_token(
             item,
