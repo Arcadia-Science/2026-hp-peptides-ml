@@ -1094,6 +1094,15 @@ def build_model(args) -> nn.Module:
         config["adalora_scalar_heads"] = args.adalora_scalar_heads
         config["adalora_attention"] = args.adalora_attention
         config["adalora_all_linears"] = args.adalora_all_linears
+        config["adapter_unfreeze_initial"] = bool(getattr(args, "adapter_unfreeze_initial", True))
+        unfreeze_prefixes = getattr(args, "adapter_unfreeze_prefixes", None)
+        if unfreeze_prefixes:
+            if isinstance(unfreeze_prefixes, str):
+                config["adapter_unfreeze_prefixes"] = [p.strip() for p in unfreeze_prefixes.split(",") if p.strip()]
+            else:
+                config["adapter_unfreeze_prefixes"] = [
+                    p.strip() for p in unfreeze_prefixes if isinstance(p, str) and p.strip()
+                ]
         config["adapter_freeze_base"] = args.adapter_freeze_base
 
     model = DetaNet(**config)
@@ -1304,6 +1313,17 @@ def main() -> None:
     parser.add_argument("--adalora-scalar-heads", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--adalora-attention", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--adalora-all-linears", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--adapter-unfreeze-initial",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="When adapter-freezing base weights, keep Embedding and first message-passing block trainable.",
+    )
+    parser.add_argument(
+        "--adapter-unfreeze-prefixes",
+        default=None,
+        help="Optional comma-separated parameter name prefixes to keep trainable with adapter-freeze-base.",
+    )
     parser.add_argument("--adapter-freeze-base", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument(
         "--ddp-find-unused-parameters",

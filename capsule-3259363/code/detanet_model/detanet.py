@@ -59,6 +59,8 @@ class DetaNet(nn.Module):
                  adalora_all_linears:bool=False,
                  pre_layernorm:bool=False,
                  pre_layernorm_eps:float=1e-5,
+                 adapter_unfreeze_initial:bool=True,
+                 adapter_unfreeze_prefixes:list|None=None,
                  adapter_freeze_base:bool=True):
         """Parameter introduction
     num_features:The dimension of the scalar feature and irreps feature(each order m), set to 128 by default.
@@ -217,11 +219,20 @@ class DetaNet(nn.Module):
                     include_attention=adalora_attention,
                     include_all_linears=adalora_all_linears,
                 )
+            keep_prefixes = []
+            if adapter_unfreeze_initial:
+                # Keep a small base slice trainable: input embedding + first message-passing block.
+                keep_prefixes.extend(["Embedding.", "blocks.0."])
+            if adapter_unfreeze_prefixes:
+                keep_prefixes.extend(
+                    [p.strip() for p in adapter_unfreeze_prefixes if isinstance(p, str) and p.strip()]
+                )
             apply_adalora(
                 self,
                 adalora_config,
                 target_modules=adalora_targets,
                 freeze_base=adapter_freeze_base,
+                keep_base_trainable_prefixes=keep_prefixes,
             )
         elif adapter_freeze_base and elora_path is not None:
             for name, param in self.named_parameters():

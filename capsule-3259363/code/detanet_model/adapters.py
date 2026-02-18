@@ -30,6 +30,7 @@ def apply_adalora(
     adalora_config,
     target_modules: Optional[Iterable[str]] = None,
     freeze_base: bool = True,
+    keep_base_trainable_prefixes: Optional[Iterable[str]] = None,
 ):
     try:
         from peft import AdaLoraConfig, TaskType, inject_adapter_in_model
@@ -58,6 +59,9 @@ def apply_adalora(
 
     if freeze_base:
         bias_setting = getattr(adalora_config, "bias", "none")
+        keep_prefixes = tuple(
+            p.strip() for p in (keep_base_trainable_prefixes or []) if isinstance(p, str) and p.strip()
+        )
         for name, param in model.named_parameters():
             lower_name = name.lower()
             if "lora" in lower_name:
@@ -66,5 +70,9 @@ def apply_adalora(
                 param.requires_grad = True
             else:
                 param.requires_grad = False
+        if keep_prefixes:
+            for name, param in model.named_parameters():
+                if any(name.startswith(prefix) for prefix in keep_prefixes):
+                    param.requires_grad = True
 
     return adalora_config
