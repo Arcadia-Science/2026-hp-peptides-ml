@@ -232,3 +232,4 @@ scripts/mount_fsx.sh
 AGENTS.md
 smoke.md
 scripts/queue_spectra_after_dipole_remote.sh
+ramanchembl_pipeline/PLAN.md

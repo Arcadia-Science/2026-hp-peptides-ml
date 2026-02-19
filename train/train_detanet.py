@@ -587,23 +587,23 @@ def _compute_stats(
         total_sq += (target * target * mask).sum().item()
         count += mask.sum().item()
 
-    if count == 0:
-        mean = torch.tensor(0.0)
-        std = torch.tensor(1.0)
-    else:
-        mean = torch.tensor(total / count)
-        var = max(total_sq / count - mean.item() ** 2, 0.0)
-        std = torch.tensor(var ** 0.5 if var > 0 else 1.0)
-
     if dist.is_available() and dist.is_initialized():
-        stats = torch.tensor([mean.item(), std.item(), count], device=device)
+        # Reduce raw moments, then derive global mean/std from them.
+        stats = torch.tensor([total, total_sq, count], device=device, dtype=torch.float64)
         dist.all_reduce(stats, op=dist.ReduceOp.SUM)
-        if stats[2].item() > 0:
-            mean = stats[0] / stats[2]
-            std = stats[1] / stats[2]
-        else:
-            mean = torch.tensor(0.0, device=device)
-            std = torch.tensor(1.0, device=device)
+        total = float(stats[0].item())
+        total_sq = float(stats[1].item())
+        count = float(stats[2].item())
+
+    if count == 0:
+        mean = torch.tensor(0.0, device=device)
+        std = torch.tensor(1.0, device=device)
+    else:
+        mean_val = total / count
+        var = max(total_sq / count - mean_val ** 2, 0.0)
+        std_val = var ** 0.5 if var > 0 else 1.0
+        mean = torch.tensor(mean_val, device=device)
+        std = torch.tensor(std_val, device=device)
 
     return mean.to(device), std.to(device)
 
