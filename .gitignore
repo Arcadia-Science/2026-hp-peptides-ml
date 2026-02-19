@@ -223,10 +223,14 @@ notebooks/hij_subset_metrics.ipynb
 
 commands.md
 ./commands.md
+./old_commands.md
+old_commands.md
 commands.md
 ./commands.md
 *.commands.md
+*.old_commands.md
 .commands.md
+.old_commands.md
 scripts/ec2_env.example
 scripts/mount_fsx.sh
 AGENTS.md

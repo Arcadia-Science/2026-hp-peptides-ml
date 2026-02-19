@@ -550,6 +550,7 @@ def _compute_stats(
     per_atom: bool,
     device: torch.device,
     skip_nonfinite: bool,
+    distributed_reduce: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     total = 0.0
     total_sq = 0.0
@@ -587,7 +588,7 @@ def _compute_stats(
         total_sq += (target * target * mask).sum().item()
         count += mask.sum().item()
 
-    if dist.is_available() and dist.is_initialized():
+    if distributed_reduce and dist.is_available() and dist.is_initialized():
         # Reduce raw moments, then derive global mean/std from them.
         stats = torch.tensor([total, total_sq, count], device=device, dtype=torch.float64)
         dist.all_reduce(stats, op=dist.ReduceOp.SUM)
@@ -1768,6 +1769,7 @@ def main() -> None:
                     per_atom=per_atom,
                     device=args.device,
                     skip_nonfinite=args.skip_nonfinite,
+                    distributed_reduce=False,
                 )
                 if cache_path:
                     cache_path.parent.mkdir(parents=True, exist_ok=True)
