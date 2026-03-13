@@ -242,3 +242,4 @@ ramanchembl_pipeline/debugging_pipeline.ipynb
 ramanchembl_pipeline/artifacts
 *.plan.md
 plan.md
+*.mplconfig

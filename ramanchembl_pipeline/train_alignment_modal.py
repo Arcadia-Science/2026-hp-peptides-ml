@@ -1,0 +1,233 @@
+"""
+Modal training script for the Raman alignment model.
+
+RUNBOOK
+=======
+
+Step 1 — Build dataset cache locally (one-time, ~2-3 hrs on CPU for 10K molecules)
+---------------------------------------------------------------------------
+Run this from the repo root:
+
+    python -c "
+    import sys, json, sqlite3
+    sys.path.insert(0, '.')
+    sys.path.insert(0, 'capsule-3259363/code')
+
+    import numpy as np, torch
+    from ramanchembl_pipeline.raman_alignment_pipeline_setup import (
+        predict_raman_from_geometry, X_GRID, SIGMA, TEMP, INIT_WL
+    )
+    from ramanchembl_pipeline import alignment_notebook_lib as lib
+    from detanet_model.spectra_simulator import Lorenz_broadening, get_raman_intensity
+
+    def lines_fn(freq, inten, xg):
+        from ramanchembl_pipeline.raman_alignment_pipeline_setup import lines_to_norm_spectrum
+        return lines_to_norm_spectrum(freq, inten, xg)
+
+    ds = lib.build_dft_mode_alignment_dataset(
+        db_path='ramanchembl_pipeline/dataset/molecule.db',
+        predict_fn=predict_raman_from_geometry,
+        x_grid=X_GRID,
+        lines_to_spectrum_fn=lines_fn,
+        cache_dir='ramanchembl_pipeline/artifacts/alignment/cache',
+        max_cases=10000,
+        pred_freq_scale_factor=1.0,  # predict_raman_from_geometry already applies FREQ_SCALE_FACTOR
+        refresh=True,
+    )
+    print('built', len(ds), 'cases')
+    "
+
+OR just run the alignment notebook cell that builds dft_alignment_dataset
+with ALIGNMENT_DFT_MAX_CASES=10000 and ALIGNMENT_REFRESH_DATASETS=1.
+
+Step 2 — Upload cache + checkpoints to Modal volume (one-time)
+---------------------------------------------------------------------------
+    modal volume create raman-alignment-data
+
+    # Dataset cache (~1-2 GB)
+    modal volume put raman-alignment-data \\
+        ramanchembl_pipeline/artifacts/alignment/cache/dft_point_v1_10000.npz \\
+        /cache/dft_point_v1_10000.npz
+    modal volume put raman-alignment-data \\
+        ramanchembl_pipeline/artifacts/alignment/cache/dft_point_v1_10000.csv \\
+        /cache/dft_point_v1_10000.csv
+
+Step 3 — Run training on Modal H100
+---------------------------------------------------------------------------
+    modal run ramanchembl_pipeline/train_alignment_modal.py \\
+        --max-cases 10000 --device cuda --max-epochs 200
+
+Step 4 — Download checkpoint
+---------------------------------------------------------------------------
+    modal volume get raman-alignment-data /outputs/alignment_model.pth \\
+        ramanchembl_pipeline/artifacts/alignment/alignment_model_10k.pth
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import modal
+
+# ---------------------------------------------------------------------------
+# Image — only needs PyTorch + scientific Python, NOT the DeTaNet model code
+# (that's only needed for the dataset build step, which runs locally)
+# ---------------------------------------------------------------------------
+image = (
+    modal.Image.debian_slim(python_version="3.11")
+    .pip_install([
+        "torch==2.3.1",
+        "numpy",
+        "scipy",
+        "pandas",
+        "rdkit",            # Morgan fingerprints (falls back gracefully if absent)
+        "matplotlib",       # for any plot outputs
+        "seaborn",          # stats_notebook_lib top-level import
+        "statsmodels",      # stats_notebook_lib uses ttost_paired, mean_diff_plot
+    ])
+    # Copy just the two library files — no DeTaNet deps needed for training
+    .add_local_file(
+        Path(__file__).parent / "alignment_notebook_lib.py",
+        "/app/alignment_notebook_lib.py",
+    )
+    .add_local_file(
+        Path(__file__).parent / "stats_notebook_lib.py",
+        "/app/stats_notebook_lib.py",
+    )
+)
+
+vol = modal.Volume.from_name("raman-alignment-data", create_if_missing=True)
+
+app = modal.App("raman-alignment", image=image)
+
+
+# ---------------------------------------------------------------------------
+# Training function
+# ---------------------------------------------------------------------------
+@app.function(
+    gpu="H100",
+    volumes={"/data": vol},
+    timeout=7200,   # 2 hrs ceiling — training should finish in ~30 min
+    memory=32768,   # 32 GB RAM — dataset arrays for 10K molecules are ~4 GB
+)
+def train_alignment(
+    max_cases: int = 10000,
+    device: str = "cuda",
+    max_epochs: int = 200,
+    coverage_loss_weight: float = 2.0,
+    latent_dim: int = 128,
+    transformer_layers: int = 4,
+    transformer_heads: int = 8,
+):
+    import sys
+    sys.path.insert(0, "/app")
+
+    import numpy as np
+    import torch
+    from pathlib import Path
+
+    # Import lib from the copied files (no DeTaNet needed)
+    import alignment_notebook_lib as lib
+    import stats_notebook_lib as stats_lib
+
+    # Patch stats_lib reference used inside alignment_notebook_lib
+    lib.stats_lib = stats_lib
+
+    cache_dir = Path("/data/cache")
+    out_dir = Path("/data/outputs")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # -----------------------------------------------------------------------
+    # Load pre-built dataset cache (built locally, uploaded to volume)
+    # -----------------------------------------------------------------------
+    npz_p = cache_dir / f"dft_point_v1_{max_cases}.npz"
+    csv_p = cache_dir / f"dft_point_v1_{max_cases}.csv"
+    if not npz_p.exists():
+        raise FileNotFoundError(
+            f"{npz_p} not found on volume.\n"
+            f"Run Step 2 from the RUNBOOK at the top of this file first."
+        )
+
+    print(f"Loading dataset from {npz_p} ...")
+    dataset = lib._load_dft_mode_dataset_bundle(npz_p, csv_p)
+    print(f"  {len(dataset)} molecules loaded")
+
+    # -----------------------------------------------------------------------
+    # Training config — dial up model size since we have 10K molecules
+    # -----------------------------------------------------------------------
+    cfg = lib.AlignmentTrainConfig(
+        max_epochs=max_epochs,
+        batch_size=256,
+        patience=40,
+        latent_dim=latent_dim,
+        transformer_layers=transformer_layers,
+        transformer_heads=transformer_heads,
+        coverage_loss_weight=coverage_loss_weight,
+        coverage_target_cm=10.0,
+        lr=3e-4,
+        weight_decay=1e-3,
+        string_feature_dim=128,
+        # v7: intensity sweep is the main approach; neural model is secondary
+        match_cutoff=15.0,
+        confidence_loss_weight=1.0,
+        confidence_threshold=0.5,
+        freq_loss_weight=1.0,
+        repulsion_loss_weight=0.0,
+        repulsion_radius_cm=5.0,
+    )
+    print("Config:", cfg)
+
+    # -----------------------------------------------------------------------
+    # Run training + eval
+    # -----------------------------------------------------------------------
+    results = lib.run_alignment_study(
+        experimental_dataset=None,      # DFT-only run
+        dft_dataset=dataset,
+        out_dir=out_dir,
+        device=device,
+        train_config=cfg,
+    )
+
+    # -----------------------------------------------------------------------
+    # Print key metrics
+    # -----------------------------------------------------------------------
+    import pandas as pd
+    summary = pd.read_csv(results["domains"]["dft"]["summary_csv"])
+    test = summary[summary["split"] == "test"]
+    print("\n=== TEST SET RESULTS ===")
+    if not test.empty:
+        row = test.iloc[0]
+        print(f"  F1@5:       {row.get('f1@5', float('nan')):.3f}")
+        print(f"  F1@10:      {row.get('f1@10', float('nan')):.3f}")
+        print(f"  F1@20:      {row.get('f1@20', float('nan')):.3f}")
+        print(f"  CWMAE@10:   {row.get('cwmae@10', float('nan')):.2f} cm^-1")
+        print(f"  Coverage@10:{row.get('coverage@10', float('nan')):.3f}")
+        print(f"  Point RMSE: {row.get('point_rmse', float('nan')):.2f} cm^-1")
+        print(f"  Modes kept: {row.get('avg_pred_kept', float('nan')):.0f}/{row.get('avg_pred_total', float('nan')):.0f}")
+    print(results["domains"]["dft"]["report_markdown"])
+
+    # Commit outputs to the volume
+    vol.commit()
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Local entrypoint — runs the Modal function
+# ---------------------------------------------------------------------------
+@app.local_entrypoint()
+def main(
+    max_cases: int = 10000,
+    device: str = "cuda",
+    max_epochs: int = 200,
+    coverage_loss_weight: float = 2.0,
+):
+    print(f"Launching training: max_cases={max_cases}, device={device}, "
+          f"max_epochs={max_epochs}, coverage_loss_weight={coverage_loss_weight}")
+    results = train_alignment.remote(
+        max_cases=max_cases,
+        device=device,
+        max_epochs=max_epochs,
+        coverage_loss_weight=coverage_loss_weight,
+    )
+    print("Done. Outputs written to Modal volume raman-alignment-data at /outputs/")
+    return results

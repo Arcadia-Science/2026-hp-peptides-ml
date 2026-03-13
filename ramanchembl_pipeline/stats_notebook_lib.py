@@ -14,7 +14,7 @@ import pandas as pd
 import seaborn as sns
 from scipy.optimize import linear_sum_assignment
 from scipy.signal import correlate, correlation_lags, find_peaks
-from scipy.stats import probplot
+from scipy.stats import bootstrap as _scipy_bootstrap, probplot
 from statsmodels.graphics.agreement import mean_diff_plot
 from statsmodels.stats.weightstats import ttost_paired
 
@@ -27,8 +27,22 @@ MANDATORY_TOLS = (5.0, 10.0)
 DEFAULT_TOL = 10.0
 SWEEP_TOLS = np.arange(5.0, 20.0 + 1e-9, 1.0, dtype=np.float64)
 SCALE_ADJUST_GRID = np.arange(0.90, 1.080 + 1e-9, 0.01, dtype=np.float64)
-BOOTSTRAP_RESAMPLES = 2000
+BOOTSTRAP_RESAMPLES = 5000
 DFT_SAMPLE_SEED = 20260306
+
+# TOST equivalence bounds — must be NARROWER than matching tolerance to be falsifiable.
+# Position: ±5 cm⁻¹ (within a 10 cm⁻¹ matching window).
+# Intensity: ±0.15 log10 units (~1.41x multiplicative).
+TOST_POSITION_BOUND_CM = 5.0
+TOST_INTENSITY_BOUND_LOG10 = 0.15
+
+# Vibrational mode-type classification by frequency region (cm⁻¹).
+# Standard assignment: torsions < 400, bends 400–1500, stretches > 1500.
+MODE_TYPE_REGIONS: dict[str, tuple[float, float]] = {
+    "torsion": (0.0, 400.0),
+    "bending": (400.0, 1500.0),
+    "stretching": (1500.0, 4000.0),
+}
 
 DYNAMIC_REGIONS: dict[str, tuple[float, float] | None] = {
     "measured_support": None,
@@ -290,6 +304,109 @@ def _spectrum_similarity(a: np.ndarray, b: np.ndarray) -> dict[str, float]:
     return {"rmse": rmse, "pearson": pearson, "spearman": spearman, "cosine": cosine}
 
 
+def _spectral_information_divergence(a: np.ndarray, b: np.ndarray) -> float:
+    """Spectral Information Divergence (SID) via symmetric KL divergence.
+
+    Treats normalised spectra as probability distributions.  Lower SID means
+    more similar.  Returns NaN when either spectrum is all-zero.
+
+    Reference: Chang (2000) IEEE-TGRS; RamanSPy metrics.
+    """
+    a = _safe_array(a)
+    b = _safe_array(b)
+    if a.size == 0 or b.size == 0 or a.size != b.size:
+        return math.nan
+    # Convert to probability distributions (non-negative, sum to 1).
+    a = np.clip(a, 0.0, None)
+    b = np.clip(b, 0.0, None)
+    sa, sb = float(np.sum(a)), float(np.sum(b))
+    if sa <= EPS or sb <= EPS:
+        return math.nan
+    p = a / sa
+    q = b / sb
+    # Add tiny floor to avoid log(0).
+    p = np.maximum(p, 1e-16)
+    q = np.maximum(q, 1e-16)
+    kl_pq = float(np.sum(p * np.log(p / q)))
+    kl_qp = float(np.sum(q * np.log(q / p)))
+    sid = kl_pq + kl_qp
+    return sid if np.isfinite(sid) else math.nan
+
+
+def _sfec(a: np.ndarray, b: np.ndarray) -> float:
+    """Squared First-difference Euclidean Cosine (SFEC).
+
+    Computes cosine similarity on the first-derivative of the spectra.
+    Robust to baseline fluctuations that confound direct cosine similarity.
+
+    Reference: Guo et al., ACS Omega (2021) — "only SFEC was reliable" under
+    baseline and noise perturbations.
+    """
+    a = _safe_array(a)
+    b = _safe_array(b)
+    if a.size < 3 or b.size < 3 or a.size != b.size:
+        return math.nan
+    da = np.diff(a)
+    db = np.diff(b)
+    denom = float(np.linalg.norm(da) * np.linalg.norm(db))
+    if denom <= EPS:
+        return math.nan
+    return float(np.dot(da, db) / denom)
+
+
+def _wcca(a: np.ndarray, b: np.ndarray, dx_cm: float, max_lag_cm: float = 50.0) -> float:
+    """Weighted Cross-Correlation Average (WCCA).
+
+    Averages normalised cross-correlation over lags from 0 to max_lag_cm,
+    weighted by an inverse-lag scheme so that well-aligned spectra score
+    higher than those needing large shifts.
+
+    Reference: SARA algorithm, Jason et al. PMC 10763559 (2023).
+    """
+    a = _safe_array(a)
+    b = _safe_array(b)
+    if a.size < 3 or b.size < 3 or a.size != b.size:
+        return math.nan
+    a0 = a - float(np.mean(a))
+    b0 = b - float(np.mean(b))
+    norm_a = float(np.linalg.norm(a0))
+    norm_b = float(np.linalg.norm(b0))
+    if norm_a <= EPS or norm_b <= EPS:
+        return math.nan
+    full_corr = correlate(a0, b0, mode="full") / (norm_a * norm_b)
+    lags = correlation_lags(a0.size, b0.size, mode="full")
+    max_lag_pts = int(max_lag_cm / max(dx_cm, EPS))
+    mask = np.abs(lags) <= max_lag_pts
+    if not np.any(mask):
+        return math.nan
+    corr_sel = full_corr[mask]
+    lag_sel = np.abs(lags[mask]).astype(np.float64)
+    # Inverse-lag weights: weight(0) = 1, decays linearly to 0 at max_lag.
+    weights = 1.0 - lag_sel / (float(max_lag_pts) + EPS)
+    weights = np.clip(weights, 0.0, None)
+    w_sum = float(np.sum(weights))
+    if w_sum <= EPS:
+        return math.nan
+    return float(np.sum(weights * corr_sel) / w_sum)
+
+
+def _classify_mode_type(freq: float) -> str:
+    """Classify a vibrational mode by frequency into torsion/bending/stretching."""
+    for mtype, (lo, hi) in MODE_TYPE_REGIONS.items():
+        if lo <= freq < hi:
+            return mtype
+    return "stretching"  # above 4000 (unlikely, but safe fallback)
+
+
+def _spectrum_similarity_extended(a: np.ndarray, b: np.ndarray, dx_cm: float = 1.0) -> dict[str, float]:
+    """Full spectral similarity suite: original metrics + SID, SFEC, WCCA."""
+    base = _spectrum_similarity(a, b)
+    base["sid"] = _spectral_information_divergence(a, b)
+    base["sfec"] = _sfec(a, b)
+    base["wcca"] = _wcca(a, b, dx_cm)
+    return base
+
+
 def _cross_correlation_lag_cm(ref: np.ndarray, pred: np.ndarray, dx_cm: float) -> float:
     ref = _safe_array(ref)
     pred = _safe_array(pred)
@@ -350,6 +467,14 @@ def _assign_snr_bins(values: pd.Series) -> pd.Series:
 
 
 def _bootstrap_ci(values: np.ndarray, statistic: Callable[[np.ndarray], float], n_resamples: int = BOOTSTRAP_RESAMPLES) -> list[float] | None:
+    """Bootstrap 95% CI using BCa (bias-corrected and accelerated) method.
+
+    BCa corrects for bias and skewness in the bootstrap distribution, giving
+    more accurate coverage than the basic percentile method — especially for
+    bounded metrics like coverage (0–1) that can be skewed near boundaries.
+
+    Falls back to percentile method if BCa fails (e.g. degenerate data).
+    """
     values = _safe_array(values)
     values = values[np.isfinite(values)]
     if values.size < 2:
@@ -357,6 +482,26 @@ def _bootstrap_ci(values: np.ndarray, statistic: Callable[[np.ndarray], float], 
     point = float(statistic(values))
     if np.allclose(values, values[0], equal_nan=False):
         return [point, point]
+    # Wrap statistic for scipy.stats.bootstrap (expects axis kwarg)
+    def _stat_fn(x, axis=None):
+        if axis is not None:
+            return np.apply_along_axis(statistic, axis, x)
+        return statistic(x)
+    try:
+        result = _scipy_bootstrap(
+            (values,),
+            statistic=_stat_fn,
+            n_resamples=int(n_resamples),
+            confidence_level=0.95,
+            method="BCa",
+            random_state=np.random.default_rng(123),
+        )
+        lo, hi = float(result.confidence_interval.low), float(result.confidence_interval.high)
+        if np.isfinite(lo) and np.isfinite(hi):
+            return [lo, hi]
+    except Exception:
+        pass
+    # Fallback: percentile method
     rng = np.random.default_rng(123)
     draws = np.empty(int(n_resamples), dtype=np.float64)
     n = int(values.size)
@@ -708,7 +853,19 @@ def _aggregate_primary_ci(pair_case_df: pd.DataFrame, benchmark: str, pair: str,
     return out
 
 
-def _collect_tost_summary(pair_case_df: pd.DataFrame, benchmark: str, pair: str, region: str, tol_cm: float, dnu_bound: float = 12.0, log_bound: float = 0.20) -> dict[str, Any]:
+def _collect_tost_summary(
+    pair_case_df: pd.DataFrame,
+    benchmark: str,
+    pair: str,
+    region: str,
+    tol_cm: float,
+    dnu_bound: float | None = None,
+    log_bound: float | None = None,
+) -> dict[str, Any]:
+    if dnu_bound is None:
+        dnu_bound = TOST_POSITION_BOUND_CM
+    if log_bound is None:
+        log_bound = TOST_INTENSITY_BOUND_LOG10
     grp = pair_case_df[
         (pair_case_df["benchmark"] == benchmark)
         & (pair_case_df["pair"] == pair)
@@ -723,9 +880,32 @@ def _collect_tost_summary(pair_case_df: pd.DataFrame, benchmark: str, pair: str,
         "pair": pair,
         "region": region,
         "tol_cm": float(tol_cm),
+        "dnu_bound_cm": float(dnu_bound),
+        "log_bound": float(log_bound),
         "position_bias_tost": pos,
         "intensity_bias_tost": inten,
     }
+
+
+def _holm_bonferroni(pvalues: list[float], alpha: float = 0.05) -> list[bool]:
+    """Holm-Bonferroni step-down correction for multiple comparisons.
+
+    Returns a list of booleans (True = reject null = equivalence passes)
+    that controls the family-wise error rate at `alpha`.
+    """
+    n = len(pvalues)
+    if n == 0:
+        return []
+    indexed = sorted(enumerate(pvalues), key=lambda x: x[1])
+    results = [False] * n
+    for rank, (orig_idx, p) in enumerate(indexed):
+        adjusted_alpha = alpha / (n - rank)
+        if p <= adjusted_alpha:
+            results[orig_idx] = True
+        else:
+            # Once we fail, all remaining (higher p-values) also fail.
+            break
+    return results
 
 
 def _build_scale_sweep(
@@ -967,6 +1147,9 @@ def _build_spectrum_summary(spectrum_metric_df: pd.DataFrame) -> pd.DataFrame:
         cosine_vals = grp["cosine"].dropna().to_numpy(dtype=np.float64)
         pearson_vals = grp["pearson"].dropna().to_numpy(dtype=np.float64)
         spearman_vals = grp["spearman"].dropna().to_numpy(dtype=np.float64)
+        sid_vals = grp["sid"].dropna().to_numpy(dtype=np.float64) if "sid" in grp.columns else np.asarray([], dtype=np.float64)
+        sfec_vals = grp["sfec"].dropna().to_numpy(dtype=np.float64) if "sfec" in grp.columns else np.asarray([], dtype=np.float64)
+        wcca_vals = grp["wcca"].dropna().to_numpy(dtype=np.float64) if "wcca" in grp.columns else np.asarray([], dtype=np.float64)
         rows.append(
             {
                 "benchmark": {"experimental_spectrum": "Experimental spectra", "dft_spectrum": "DFT spectra"}.get(benchmark, benchmark),
@@ -982,6 +1165,16 @@ def _build_spectrum_summary(spectrum_metric_df: pd.DataFrame) -> pd.DataFrame:
                 "pearson_median": float(np.median(pearson_vals)) if pearson_vals.size else math.nan,
                 "spearman_mean": float(np.mean(spearman_vals)) if spearman_vals.size else math.nan,
                 "spearman_median": float(np.median(spearman_vals)) if spearman_vals.size else math.nan,
+                # New metrics: SID, SFEC, WCCA
+                "sid_mean": float(np.mean(sid_vals)) if sid_vals.size else math.nan,
+                "sid_mean_ci95": _bootstrap_ci(sid_vals, np.mean) if sid_vals.size >= 2 else None,
+                "sid_median": float(np.median(sid_vals)) if sid_vals.size else math.nan,
+                "sfec_mean": float(np.mean(sfec_vals)) if sfec_vals.size else math.nan,
+                "sfec_mean_ci95": _bootstrap_ci(sfec_vals, np.mean) if sfec_vals.size >= 2 else None,
+                "sfec_median": float(np.median(sfec_vals)) if sfec_vals.size else math.nan,
+                "wcca_mean": float(np.mean(wcca_vals)) if wcca_vals.size else math.nan,
+                "wcca_mean_ci95": _bootstrap_ci(wcca_vals, np.mean) if wcca_vals.size >= 2 else None,
+                "wcca_median": float(np.median(wcca_vals)) if wcca_vals.size else math.nan,
             }
         )
     return pd.DataFrame(rows)
@@ -993,6 +1186,15 @@ def _build_tost_df(pair_case_df: pd.DataFrame) -> pd.DataFrame:
         _collect_tost_summary(pair_case_df, "dft_peak", "DFT->Pred", "fingerprint", 10.0),
         _collect_tost_summary(pair_case_df, "experimental_peak", "Exp->Pred", "fingerprint", 10.0),
     ]
+    # Collect raw p-values for Holm-Bonferroni correction across the family.
+    pos_pvals = [float(r["position_bias_tost"].get("pvalue", math.nan)) for r in rows]
+    int_pvals = [float(r["intensity_bias_tost"].get("pvalue", math.nan)) for r in rows]
+    all_pvals = pos_pvals + int_pvals
+    # Replace NaN with 1.0 for correction purposes.
+    all_pvals_clean = [p if np.isfinite(p) else 1.0 for p in all_pvals]
+    holm_passes = _holm_bonferroni(all_pvals_clean, alpha=0.05)
+    n_tests = len(all_pvals)
+
     out = pd.DataFrame(
         [
             {
@@ -1000,13 +1202,18 @@ def _build_tost_df(pair_case_df: pd.DataFrame) -> pd.DataFrame:
                 "pair": row["pair"],
                 "region": REGION_DISPLAY.get(row["region"], row["region"]),
                 "tol_cm": row["tol_cm"],
+                "position_bound_cm": row["dnu_bound_cm"],
+                "intensity_bound_log10": row["log_bound"],
                 "position_bias_pvalue": row["position_bias_tost"].get("pvalue"),
-                "position_bias_passes": row["position_bias_tost"].get("passes"),
+                "position_bias_passes_uncorrected": row["position_bias_tost"].get("passes"),
+                "position_bias_passes_holm": holm_passes[i],
                 "intensity_bias_pvalue": row["intensity_bias_tost"].get("pvalue"),
-                "intensity_bias_passes": row["intensity_bias_tost"].get("passes"),
+                "intensity_bias_passes_uncorrected": row["intensity_bias_tost"].get("passes"),
+                "intensity_bias_passes_holm": holm_passes[len(rows) + i],
                 "n_cases": row["position_bias_tost"].get("n"),
+                "n_simultaneous_tests": n_tests,
             }
-            for row in rows
+            for i, row in enumerate(rows)
         ]
     )
     return out
@@ -1035,7 +1242,11 @@ def _build_assessment(
         & (tost_df["pair"] == "DFT->Pred")
         & (tost_df["region"] == REGION_DISPLAY["full"])
     ]
-    dft_pos_bias_pass = bool(dft_tost["position_bias_passes"].iloc[0]) if not dft_tost.empty else False
+    # Prefer Holm-corrected result; fall back to uncorrected.
+    _pos_col = "position_bias_passes_holm" if "position_bias_passes_holm" in tost_df.columns else "position_bias_passes_uncorrected"
+    if _pos_col not in tost_df.columns:
+        _pos_col = "position_bias_passes"  # legacy column name
+    dft_pos_bias_pass = bool(dft_tost[_pos_col].iloc[0]) if (not dft_tost.empty and _pos_col in dft_tost.columns) else False
     primary_target_met = bool(np.isfinite(raw_cov) and raw_cov >= primary_target)
     aspirational_target_met = bool(np.isfinite(raw_cov) and raw_cov >= aspirational_target)
 
@@ -1826,15 +2037,6 @@ def _build_narrative(
         peak_cov = float(dft_peak_10["global_coverage_any"])
         peak_weighted_cov = float(dft_peak_10["global_weighted_coverage_any"])
         peak_count_ratio = float(dft_peak_10["total_target_lines"] / dft_peak_10["total_source_lines"]) if float(dft_peak_10["total_source_lines"]) > 0 else math.nan
-        relation = _compare_phrase(
-            peak_cov,
-            peak_cov,
-            up="",
-            down="",
-            same="",
-            tol=0.02,
-        )
-        del relation
         text = (
             f"On the DFT peak-resolution benchmark, pooled unweighted peak coverage at ±10 cm^-1 is {_fmt_pct(peak_cov)} and "
             f"{_fmt_pct(float(dft_peak_5['global_coverage_any'])) if dft_peak_5 is not None else 'NA'} at ±5 cm^-1. "
@@ -1934,7 +2136,39 @@ def _build_narrative(
             text += f" In the low-SNR fingerprint stratum, pooled intensity-weighted coverage is {_fmt_pct(low_fp)}. {snr_relation}"
         paragraphs.append(text)
 
+    # --- New spectral metrics paragraph (SID, SFEC, WCCA) ---
+    new_metric_bits: list[str] = []
+    for spec_key, spec_label in [(dft_spec, "DFT full-range"), (exp_spec, "experimental measured-support")]:
+        if spec_key is None:
+            continue
+        sid_m = float(spec_key.get("sid_median", math.nan)) if "sid_median" in spec_key.index else math.nan
+        sfec_m = float(spec_key.get("sfec_median", math.nan)) if "sfec_median" in spec_key.index else math.nan
+        wcca_m = float(spec_key.get("wcca_median", math.nan)) if "wcca_median" in spec_key.index else math.nan
+        parts = []
+        if np.isfinite(sfec_m):
+            parts.append(f"SFEC (first-derivative cosine) median {_fmt_num(sfec_m, 3)}")
+        if np.isfinite(wcca_m):
+            parts.append(f"WCCA median {_fmt_num(wcca_m, 3)}")
+        if np.isfinite(sid_m):
+            parts.append(f"SID (spectral information divergence) median {_fmt_num(sid_m, 2)}")
+        if parts:
+            new_metric_bits.append(f"On {spec_label} spectra: " + ", ".join(parts) + ".")
+    if new_metric_bits:
+        paragraphs.append(
+            "Extended spectral similarity metrics (robust to baseline and noise): "
+            + " ".join(new_metric_bits)
+            + " SFEC is cosine similarity on the first derivative (robust to baseline drift; Guo et al. ACS Omega 2021). "
+            "WCCA is the lag-weighted cross-correlation average (SARA algorithm; PMC 10763559). "
+            "SID is the symmetric KL divergence treating spectra as probability distributions (lower is more similar)."
+        )
+
+    # --- TOST equivalence tests (corrected bounds + Holm-Bonferroni) ---
     if not tost_df.empty:
+        pos_bound_col = "position_bound_cm" if "position_bound_cm" in tost_df.columns else None
+        int_bound_col = "intensity_bound_log10" if "intensity_bound_log10" in tost_df.columns else None
+        holm_col = "position_bias_passes_holm" if "position_bias_passes_holm" in tost_df.columns else None
+        n_tests_col = "n_simultaneous_tests" if "n_simultaneous_tests" in tost_df.columns else None
+
         dft_tost = tost_df[
             (tost_df["benchmark"] == BENCHMARK_DISPLAY["dft_peak"])
             & (tost_df["pair"] == "DFT->Pred")
@@ -1945,23 +2179,40 @@ def _build_narrative(
             & (tost_df["pair"] == "Exp->Pred")
             & (tost_df["region"] == REGION_DISPLAY["fingerprint"])
         ]
-        tost_bits: list[str] = []
-        if not dft_tost.empty:
-            row = dft_tost.iloc[0]
+        n_sim = int(dft_tost.iloc[0][n_tests_col]) if not dft_tost.empty and n_tests_col else 6
+        tost_bits: list[str] = [
+            f"TOST equivalence testing with Holm-Bonferroni correction across {n_sim} simultaneous tests "
+            f"(position bounds ±{_fmt_num(TOST_POSITION_BOUND_CM, 1)} cm^-1, "
+            f"intensity bounds ±{_fmt_num(TOST_INTENSITY_BOUND_LOG10, 2)} log10 units):"
+        ]
+        for label, tost_row_df in [("DFT full", dft_tost), ("Experimental fingerprint", exp_tost)]:
+            if tost_row_df.empty:
+                continue
+            row = tost_row_df.iloc[0]
+            pos_pass_key = "position_bias_passes_holm" if holm_col and holm_col in row.index else "position_bias_passes_uncorrected"
+            int_pass_key = "intensity_bias_passes_holm" if holm_col and holm_col in row.index else "intensity_bias_passes_uncorrected"
             tost_bits.append(
-                f"On the DFT benchmark, the signed position-bias equivalence test {'passes' if bool(row['position_bias_passes']) else 'does not pass'} "
-                f"(p={_fmt_num(float(row['position_bias_pvalue']), 3)}), and the signed intensity-bias equivalence test "
-                f"{'passes' if bool(row['intensity_bias_passes']) else 'does not pass'} (p={_fmt_num(float(row['intensity_bias_pvalue']), 3)})."
+                f" {label}: position bias {'equivalent' if bool(row[pos_pass_key]) else 'NOT equivalent'} "
+                f"(p={_fmt_num(float(row['position_bias_pvalue']), 4)}), "
+                f"intensity bias {'equivalent' if bool(row[int_pass_key]) else 'NOT equivalent'} "
+                f"(p={_fmt_num(float(row['intensity_bias_pvalue']), 4)})."
             )
-        if not exp_tost.empty:
-            row = exp_tost.iloc[0]
-            tost_bits.append(
-                f"On experimental fingerprint peaks, the signed position-bias equivalence test {'passes' if bool(row['position_bias_passes']) else 'does not pass'} "
-                f"(p={_fmt_num(float(row['position_bias_pvalue']), 3)}), and the signed intensity-bias equivalence test "
-                f"{'passes' if bool(row['intensity_bias_passes']) else 'does not pass'} (p={_fmt_num(float(row['intensity_bias_pvalue']), 3)})."
+        paragraphs.append(" ".join(tost_bits))
+
+    # --- Per-mode-type analysis paragraph ---
+    mode_type_data = summary.get("mode_type_analysis")
+    if mode_type_data:
+        mt_bits = ["Per-mode-type analysis at ±10 cm^-1 (torsion <400, bending 400-1500, stretching >1500 cm^-1):"]
+        for mtype in ["torsion", "bending", "stretching"]:
+            mt = mode_type_data.get(mtype)
+            if mt is None:
+                continue
+            mt_bits.append(
+                f" {mtype}: coverage {_fmt_pct(mt['coverage'])}, "
+                f"n_source={mt['n_source']}, n_matched={mt['n_matched']}, "
+                f"median |Δν| {_fmt_num(mt['median_abs_dnu'], 1)} cm^-1."
             )
-        if tost_bits:
-            paragraphs.append(" ".join(tost_bits))
+        paragraphs.append(" ".join(mt_bits))
 
     gate = summary.get("gates", {})
     assess = summary.get("assessment", {})
@@ -1972,8 +2223,7 @@ def _build_narrative(
     caveats = gate.get("caveats", [])
     text = (
         f"Overall assessment: **{overall}**. "
-        f"Primary DFT position benchmark status: **{benchmark_status}** at coverage@10 against a {100.0 * float(primary_target):.0f}% target. "
-        f""
+        f"Primary DFT position benchmark status: **{benchmark_status}** at coverage@10 against a {100.0 * float(primary_target):.0f}% target."
     )
     if failed:
         text += " Benchmark failures: " + "; ".join(failed) + "."
@@ -2068,7 +2318,7 @@ def run_raman_stats_analysis(
         if fp_region is not None:
             fp_mask = (x_grid >= float(fp_region[0])) & (x_grid <= float(fp_region[1]))
             lag_fp = _cross_correlation_lag_cm(y_exp[fp_mask], _normalize_intensity(y_pred[fp_mask]), dx_cm)
-            spec_region_metrics = _spectrum_similarity(y_exp[fp_mask], _normalize_intensity(y_pred[fp_mask]))
+            spec_region_metrics = _spectrum_similarity_extended(y_exp[fp_mask], _normalize_intensity(y_pred[fp_mask]), dx_cm)
             spectrum_metric_rows.append(
                 {
                     "case_id": f"exp:{int(row['id'])}",
@@ -2082,7 +2332,7 @@ def run_raman_stats_analysis(
             )
         else:
             lag_fp = math.nan
-        spec_support_metrics = _spectrum_similarity(y_exp[support_mask], _normalize_intensity(y_pred[support_mask]))
+        spec_support_metrics = _spectrum_similarity_extended(y_exp[support_mask], _normalize_intensity(y_pred[support_mask]), dx_cm)
         spectrum_metric_rows.append(
             {
                 "case_id": f"exp:{int(row['id'])}",
@@ -2264,7 +2514,7 @@ def run_raman_stats_analysis(
                     "component": component,
                     "pair": "DFT-Pred",
                     "region": "full",
-                    **_spectrum_similarity(spec_dft[full_mask], _normalize_intensity(y_pred)[full_mask]),
+                    **_spectrum_similarity_extended(spec_dft[full_mask], _normalize_intensity(y_pred)[full_mask], dx_cm),
                 }
             )
             spectrum_metric_rows.append(
@@ -2275,7 +2525,7 @@ def run_raman_stats_analysis(
                     "component": component,
                     "pair": "DFT-Pred",
                     "region": "fingerprint",
-                    **_spectrum_similarity(spec_dft[fp_mask], _normalize_intensity(y_pred)[fp_mask]),
+                    **_spectrum_similarity_extended(spec_dft[fp_mask], _normalize_intensity(y_pred)[fp_mask], dx_cm),
                 }
             )
     finally:
@@ -2440,6 +2690,39 @@ def run_raman_stats_analysis(
     )
     overall_assessment = str(assessment["overall_assessment"])
 
+    # --- Per-mode-type analysis (torsion / bending / stretching) ---
+    mode_type_analysis: dict[str, Any] = {}
+    dft_raw_lines = line_level_df[
+        (line_level_df["benchmark"] == "dft_raw_line")
+        & (line_level_df["pair"] == "DFT->Pred")
+        & (line_level_df["region"] == "full")
+        & (line_level_df["tol_cm"] == DEFAULT_TOL)
+    ].copy() if not line_level_df.empty else pd.DataFrame()
+    if not dft_raw_lines.empty:
+        dft_raw_lines["mode_type"] = dft_raw_lines["source_freq_cm"].apply(_classify_mode_type)
+        # Also need total source counts per mode type from the case data.
+        for mtype, (mlo, mhi) in MODE_TYPE_REGIONS.items():
+            mt_matched = dft_raw_lines[dft_raw_lines["mode_type"] == mtype]
+            # Count total DFT source modes in this range across all cases.
+            total_source = 0
+            for case in cases:
+                if case["benchmark_group"] != "dft":
+                    continue
+                dft_freq = _safe_array(case["line_sets"]["DFTRaw"]["freq"])
+                total_source += int(np.sum((dft_freq >= mlo) & (dft_freq < mhi)))
+            n_matched = len(mt_matched)
+            coverage = n_matched / total_source if total_source > 0 else math.nan
+            median_abs = float(mt_matched["abs_dnu_cm"].median()) if n_matched > 0 else math.nan
+            mode_type_analysis[mtype] = {
+                "n_source": total_source,
+                "n_matched": n_matched,
+                "coverage": float(coverage),
+                "median_abs_dnu": float(median_abs),
+            }
+    mode_type_csv = out_dir / "stats_mode_type_analysis.csv"
+    if mode_type_analysis:
+        pd.DataFrame(mode_type_analysis).T.to_csv(mode_type_csv)
+
     gotcha_high_fp = mandatory_case_df[
         (mandatory_case_df["benchmark"] == "experimental_peak")
         & (mandatory_case_df["pair"] == "Pred->Exp")
@@ -2553,6 +2836,14 @@ def run_raman_stats_analysis(
             "dft_full_cosine_median": dft_cosine_median,
             "experimental_support_cosine_median": exp_cosine_median,
         },
+        "tost_config": {
+            "position_bound_cm": float(TOST_POSITION_BOUND_CM),
+            "intensity_bound_log10": float(TOST_INTENSITY_BOUND_LOG10),
+            "multiple_comparison_correction": "holm_bonferroni",
+            "bootstrap_method": "BCa",
+            "bootstrap_resamples": int(BOOTSTRAP_RESAMPLES),
+        },
+        "mode_type_analysis": mode_type_analysis if mode_type_analysis else None,
         "scale_diagnostics": scale_diag,
         "statistical_tests": json.loads(tost_df.to_json(orient="records")),
         "assessment": assessment,
