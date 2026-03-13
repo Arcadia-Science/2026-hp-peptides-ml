@@ -243,3 +243,5 @@ ramanchembl_pipeline/artifacts
 *.plan.md
 plan.md
 *.mplconfig
+*.fixing.md
+ramanchembl_pipeline/fixing.md
