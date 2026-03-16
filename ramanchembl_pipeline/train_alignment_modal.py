@@ -118,6 +118,7 @@ def train_alignment(
     latent_dim: int = 128,
     transformer_layers: int = 4,
     transformer_heads: int = 8,
+    model_type: str = "peak",
 ):
     import sys
     sys.path.insert(0, "/app")
@@ -150,43 +151,62 @@ def train_alignment(
 
     print(f"Loading dataset from {npz_p} ...")
     dataset = lib._load_dft_mode_dataset_bundle(npz_p, csv_p)
-    print(f"  {len(dataset)} molecules loaded")
+    print(f"  {len(dataset)} molecules loaded, model_type={model_type}")
 
-    # -----------------------------------------------------------------------
-    # Training config — dial up model size since we have 10K molecules
-    # -----------------------------------------------------------------------
-    cfg = lib.AlignmentTrainConfig(
-        max_epochs=max_epochs,
-        batch_size=256,
-        patience=40,
-        latent_dim=latent_dim,
-        transformer_layers=transformer_layers,
-        transformer_heads=transformer_heads,
-        coverage_loss_weight=coverage_loss_weight,
-        coverage_target_cm=10.0,
-        lr=3e-4,
-        weight_decay=1e-3,
-        string_feature_dim=128,
-        # v7: intensity sweep is the main approach; neural model is secondary
-        match_cutoff=15.0,
-        confidence_loss_weight=1.0,
-        confidence_threshold=0.5,
-        freq_loss_weight=1.0,
-        repulsion_loss_weight=0.0,
-        repulsion_radius_cm=5.0,
-    )
-    print("Config:", cfg)
+    if model_type == "spectral":
+        # -------------------------------------------------------------------
+        # Spectral U-Net path
+        # -------------------------------------------------------------------
+        cfg = lib.SpectralAlignmentTrainConfig(
+            max_epochs=max_epochs,
+            batch_size=64,
+            patience=30,
+            morgan_fp_bits=2048,
+            film_dim=256,
+            finetune_epochs=50,
+            finetune_lr=1e-4,
+            finetune_patience=20,
+        )
+        print("Config:", cfg)
 
-    # -----------------------------------------------------------------------
-    # Run training + eval
-    # -----------------------------------------------------------------------
-    results = lib.run_alignment_study(
-        experimental_dataset=None,      # DFT-only run
-        dft_dataset=dataset,
-        out_dir=out_dir,
-        device=device,
-        train_config=cfg,
-    )
+        results = lib.run_spectral_alignment_study(
+            dft_dataset=dataset,
+            out_dir=out_dir,
+            device=device,
+            train_config=cfg,
+        )
+    else:
+        # -------------------------------------------------------------------
+        # Peak coordinate transformer path (existing)
+        # -------------------------------------------------------------------
+        cfg = lib.AlignmentTrainConfig(
+            max_epochs=max_epochs,
+            batch_size=256,
+            patience=40,
+            latent_dim=latent_dim,
+            transformer_layers=transformer_layers,
+            transformer_heads=transformer_heads,
+            coverage_loss_weight=coverage_loss_weight,
+            coverage_target_cm=10.0,
+            lr=3e-4,
+            weight_decay=1e-3,
+            string_feature_dim=128,
+            match_cutoff=15.0,
+            confidence_loss_weight=1.0,
+            confidence_threshold=0.5,
+            freq_loss_weight=1.0,
+            repulsion_loss_weight=0.0,
+            repulsion_radius_cm=5.0,
+        )
+        print("Config:", cfg)
+
+        results = lib.run_alignment_study(
+            experimental_dataset=None,
+            dft_dataset=dataset,
+            out_dir=out_dir,
+            device=device,
+            train_config=cfg,
+        )
 
     # -----------------------------------------------------------------------
     # Print key metrics
@@ -203,7 +223,9 @@ def train_alignment(
         print(f"  CWMAE@10:   {row.get('cwmae@10', float('nan')):.2f} cm^-1")
         print(f"  Coverage@10:{row.get('coverage@10', float('nan')):.3f}")
         print(f"  Point RMSE: {row.get('point_rmse', float('nan')):.2f} cm^-1")
-        print(f"  Modes kept: {row.get('avg_pred_kept', float('nan')):.0f}/{row.get('avg_pred_total', float('nan')):.0f}")
+        if 'avg_pred_kept' in row.index:
+            print(f"  Modes kept: {row.get('avg_pred_kept', float('nan')):.0f}/"
+                  f"{row.get('avg_pred_total', float('nan')):.0f}")
     print(results["domains"]["dft"]["report_markdown"])
 
     # Commit outputs to the volume
@@ -220,14 +242,16 @@ def main(
     device: str = "cuda",
     max_epochs: int = 200,
     coverage_loss_weight: float = 2.0,
+    model_type: str = "peak",
 ):
     print(f"Launching training: max_cases={max_cases}, device={device}, "
-          f"max_epochs={max_epochs}, coverage_loss_weight={coverage_loss_weight}")
+          f"max_epochs={max_epochs}, model_type={model_type}")
     results = train_alignment.remote(
         max_cases=max_cases,
         device=device,
         max_epochs=max_epochs,
         coverage_loss_weight=coverage_loss_weight,
+        model_type=model_type,
     )
     print("Done. Outputs written to Modal volume raman-alignment-data at /outputs/")
     return results

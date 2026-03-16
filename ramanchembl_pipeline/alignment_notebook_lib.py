@@ -525,8 +525,9 @@ def build_dft_mode_alignment_dataset(
     con.close()
 
     mol_feats, pf_l, pi_l, tf_l, ti_l, yps_l, yts_l, meta = [], [], [], [], [], [], [], []
-    
-    for mid, smiles, blob in rows:
+
+    from tqdm import tqdm
+    for mid, smiles, blob in tqdm(rows, desc="Building dataset", unit="mol"):
         try:
             payload = stats_lib._decode_dft_blob(blob)
             pos, z = payload["coord"], payload["atoms"]
@@ -534,7 +535,7 @@ def build_dft_mode_alignment_dataset(
             prf = prf * pred_freq_scale_factor
 
             tf, ti = payload["freq"], payload["Raman Activ"]
-            
+
             mol_feats.append(_geometry_mol_features(pos, z))
             pf_l.append(np.asarray(prf, dtype=np.float32)); pi_l.append(np.asarray(pra, dtype=np.float32))
             tf_l.append(np.asarray(tf, dtype=np.float32)); ti_l.append(np.asarray(ti, dtype=np.float32))
@@ -542,7 +543,7 @@ def build_dft_mode_alignment_dataset(
             yts_l.append(_normalize_signal(lines_to_spectrum_fn(tf, ti, x_grid)))
             meta.append({"molecule_id": mid, "smiles": smiles})
         except Exception as e:
-            print(f"Error processing row {mid}: {e}")
+            print(f"Error processing row {mid}: {e}", flush=True)
             continue
 
     def pad(l, val=0):
@@ -920,3 +921,602 @@ def modal_notebook_guidance(v="/mnt/raman"):
 
 def _runtime_estimate_minutes(ds, cfg, dev):
     return len(ds) * cfg.max_epochs * 0.0005
+
+
+# ---------------------------------------------------------------------------
+# Phase 1: Spectral U-Net 1D (spectrum → spectrum alignment)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SpectralAlignmentTrainConfig:
+    seed: int = 20260309
+    batch_size: int = 32
+    max_epochs: int = 200
+    patience: int = 30
+    lr: float = 3e-4
+    weight_decay: float = 1e-3
+    morgan_fp_bits: int = 2048
+    film_dim: int = 256
+    # Phase 1 loss weights
+    mse_weight: float = 1.0
+    derivative_mse_weight: float = 0.5
+    spectral_angle_weight: float = 0.1
+    # Phase 2 Sinkhorn fine-tune
+    sinkhorn_iters: int = 20
+    sinkhorn_tau: float = 10.0  # cm⁻¹ scale for cost softening
+    sinkhorn_match_sigma: float = 10.0  # cm⁻¹ for soft match indicator
+    finetune_spectral_weight: float = 0.3
+    finetune_sinkhorn_weight: float = 0.7
+    finetune_epochs: int = 50
+    finetune_lr: float = 1e-4
+    finetune_patience: int = 20
+    # Splits
+    val_fraction: float = 0.15
+    test_fraction: float = 0.15
+
+
+class _ResConvBlock1D(nn.Module):
+    """Residual 1D conv block with k=5 kernel."""
+    def __init__(self, channels, kernel_size=5):
+        super().__init__()
+        pad = kernel_size // 2
+        self.conv1 = nn.Conv1d(channels, channels, kernel_size, padding=pad)
+        self.bn1 = nn.BatchNorm1d(channels)
+        self.conv2 = nn.Conv1d(channels, channels, kernel_size, padding=pad)
+        self.bn2 = nn.BatchNorm1d(channels)
+
+    def forward(self, x):
+        res = x
+        x = F.gelu(self.bn1(self.conv1(x)))
+        x = self.bn2(self.conv2(x))
+        return F.gelu(x + res)
+
+
+class _DownBlock(nn.Module):
+    def __init__(self, in_ch, out_ch, kernel_size=5):
+        super().__init__()
+        pad = kernel_size // 2
+        self.conv = nn.Conv1d(in_ch, out_ch, kernel_size, padding=pad)
+        self.bn = nn.BatchNorm1d(out_ch)
+        self.res = _ResConvBlock1D(out_ch, kernel_size)
+        self.pool = nn.MaxPool1d(2)
+
+    def forward(self, x):
+        x = F.gelu(self.bn(self.conv(x)))
+        x = self.res(x)
+        return x, self.pool(x)
+
+
+class _UpBlock(nn.Module):
+    def __init__(self, in_ch, skip_ch, out_ch, kernel_size=5):
+        super().__init__()
+        self.up = nn.ConvTranspose1d(in_ch, in_ch, kernel_size=2, stride=2)
+        pad = kernel_size // 2
+        self.conv = nn.Conv1d(in_ch + skip_ch, out_ch, kernel_size, padding=pad)
+        self.bn = nn.BatchNorm1d(out_ch)
+        self.res = _ResConvBlock1D(out_ch, kernel_size)
+
+    def forward(self, x, skip):
+        x = self.up(x)
+        diff = skip.shape[-1] - x.shape[-1]
+        if diff > 0:
+            x = F.pad(x, (0, diff))
+        elif diff < 0:
+            x = x[..., :skip.shape[-1]]
+        x = torch.cat([x, skip], dim=1)
+        x = F.gelu(self.bn(self.conv(x)))
+        return self.res(x)
+
+
+class _FiLMLayer(nn.Module):
+    """Feature-wise Linear Modulation conditioned on molecule features."""
+    def __init__(self, mol_dim, channels, film_dim=256):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(mol_dim, film_dim),
+            nn.GELU(),
+            nn.Linear(film_dim, film_dim),
+            nn.GELU(),
+        )
+        self.gamma_proj = nn.Linear(film_dim, channels)
+        self.beta_proj = nn.Linear(film_dim, channels)
+
+    def forward(self, x, mol_features):
+        h = self.mlp(mol_features)
+        gamma = self.gamma_proj(h).unsqueeze(-1)   # (B, C, 1)
+        beta = self.beta_proj(h).unsqueeze(-1)
+        return (1 + gamma) * x + beta              # residual scaling
+
+
+class SpectralUNet1D(nn.Module):
+    """
+    1D U-Net for spectrum→spectrum alignment.
+    4 levels (32→64→128→256 channels), k=5 residual conv blocks,
+    FiLM conditioning at bottleneck on molecule features.
+    """
+    def __init__(self, mol_dim: int, cfg: SpectralAlignmentTrainConfig):
+        super().__init__()
+        self.cfg = cfg
+        ch = [32, 64, 128, 256]
+
+        self.down0 = _DownBlock(1, ch[0])
+        self.down1 = _DownBlock(ch[0], ch[1])
+        self.down2 = _DownBlock(ch[1], ch[2])
+        self.down3 = _DownBlock(ch[2], ch[3])
+
+        self.bottleneck = _ResConvBlock1D(ch[3])
+        self.film = _FiLMLayer(mol_dim, ch[3], cfg.film_dim)
+
+        self.up3 = _UpBlock(ch[3], ch[3], ch[2])
+        self.up2 = _UpBlock(ch[2], ch[2], ch[1])
+        self.up1 = _UpBlock(ch[1], ch[1], ch[0])
+        self.up0 = _UpBlock(ch[0], ch[0], ch[0])
+
+        self.head = nn.Conv1d(ch[0], 1, kernel_size=1)
+
+    def forward(self, spectrum, mol_features):
+        # spectrum: (B, L) → (B, 1, L)
+        x = spectrum.unsqueeze(1)
+        orig_len = x.shape[-1]
+
+        # Pad to multiple of 16 (2^4 levels of pooling)
+        pad_needed = (16 - orig_len % 16) % 16
+        if pad_needed > 0:
+            x = F.pad(x, (0, pad_needed))
+
+        s0, x = self.down0(x)
+        s1, x = self.down1(x)
+        s2, x = self.down2(x)
+        s3, x = self.down3(x)
+
+        x = self.bottleneck(x)
+        x = self.film(x, mol_features)
+
+        x = self.up3(x, s3)
+        x = self.up2(x, s2)
+        x = self.up1(x, s1)
+        x = self.up0(x, s0)
+
+        x = self.head(x).squeeze(1)        # (B, padded_L)
+        x = x[..., :orig_len]              # crop to original length
+        return torch.sigmoid(x)
+
+
+class SpectrumDataset(Dataset):
+    """Wraps y_pred_spec, y_target_spec, mol_features, and optionally target peaks."""
+    def __init__(self, y_pred_spec, y_target_spec, mol_features,
+                 target_freq=None, target_intensity=None, target_mask=None):
+        self.y_pred = torch.as_tensor(y_pred_spec, dtype=torch.float32)
+        self.y_target = torch.as_tensor(y_target_spec, dtype=torch.float32)
+        self.mol_features = torch.as_tensor(mol_features, dtype=torch.float32)
+        self.has_peaks = target_freq is not None
+        if self.has_peaks:
+            self.target_freq = torch.as_tensor(target_freq, dtype=torch.float32)
+            self.target_intensity = torch.as_tensor(target_intensity, dtype=torch.float32)
+            self.target_mask = torch.as_tensor(target_mask, dtype=torch.float32)
+
+    def __len__(self):
+        return len(self.y_pred)
+
+    def __getitem__(self, idx):
+        if self.has_peaks:
+            return (self.y_pred[idx], self.y_target[idx], self.mol_features[idx],
+                    self.target_freq[idx], self.target_intensity[idx], self.target_mask[idx])
+        return (self.y_pred[idx], self.y_target[idx], self.mol_features[idx])
+
+
+def spectral_loss(pred, target, cfg):
+    """MSE + derivative MSE + spectral angle loss."""
+    mse = F.mse_loss(pred, target)
+
+    pred_d = pred[:, 1:] - pred[:, :-1]
+    target_d = target[:, 1:] - target[:, :-1]
+    deriv_mse = F.mse_loss(pred_d, target_d)
+
+    dot = (pred * target).sum(dim=-1)
+    p_norm = pred.norm(dim=-1).clamp(min=EPS)
+    t_norm = target.norm(dim=-1).clamp(min=EPS)
+    angle_loss = (1.0 - dot / (p_norm * t_norm)).mean()
+
+    total = (cfg.mse_weight * mse
+             + cfg.derivative_mse_weight * deriv_mse
+             + cfg.spectral_angle_weight * angle_loss)
+    components = {"mse": mse.item(), "deriv_mse": deriv_mse.item(), "angle": angle_loss.item()}
+    return total, components
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Sinkhorn F1 fine-tune
+# ---------------------------------------------------------------------------
+
+def _batch_extract_peaks(spectra_np, x_grid, prominence_frac=0.03, min_distance_cm=8.0):
+    """Extract peaks from a batch of spectra using scipy.signal.find_peaks."""
+    from scipy.signal import find_peaks
+    dx = float(np.median(np.diff(x_grid)))
+    distance_pts = max(1, int(round(min_distance_cm / max(dx, 1e-12))))
+    results = []
+    for i in range(len(spectra_np)):
+        y = spectra_np[i]
+        max_y = float(np.max(y))
+        if max_y <= 0:
+            results.append((np.array([], dtype=np.float64), np.array([], dtype=np.float64)))
+            continue
+        idx, _ = find_peaks(y, prominence=prominence_frac * max_y, distance=distance_pts)
+        if len(idx) == 0:
+            results.append((np.array([], dtype=np.float64), np.array([], dtype=np.float64)))
+            continue
+        results.append((x_grid[idx].astype(np.float64), (y[idx] / max_y).astype(np.float64)))
+    return results
+
+
+def sinkhorn_f1_loss(corrected_spectrum, pred_peaks_list, target_freq, target_intensity,
+                     target_mask, x_grid_tensor, cfg):
+    """
+    Differentiable F1 via Sinkhorn soft assignment.
+
+    Peak positions are extracted non-differentiably, but the spectrum values at
+    those positions are read differentiably, so gradients flow back to shape the
+    output spectrum (increase amplitude at true peaks, suppress false ones).
+    """
+    B = corrected_spectrum.shape[0]
+    device = corrected_spectrum.device
+    total_loss = torch.tensor(0.0, device=device)
+    count = 0
+
+    x_min = float(x_grid_tensor[0])
+    x_max = float(x_grid_tensor[-1])
+    L = len(x_grid_tensor)
+
+    for b in range(B):
+        pp, _ = pred_peaks_list[b]
+        if len(pp) == 0:
+            continue
+        t_valid = target_mask[b] > 0.5
+        if t_valid.sum() < 1:
+            continue
+
+        tf_b = target_freq[b][t_valid]
+        ti_b = target_intensity[b][t_valid]
+        ti_norm = ti_b / (ti_b.max() + EPS)
+
+        # Differentiable readout of spectrum at predicted peak positions
+        pp_t = torch.as_tensor(pp, dtype=torch.float32, device=device)
+        frac_idx = (pp_t - x_min) / (x_max - x_min + EPS) * (L - 1)
+        idx_lo = frac_idx.long().clamp(0, L - 2)
+        idx_hi = (idx_lo + 1).clamp(max=L - 1)
+        w = frac_idx - idx_lo.float()
+        pred_int = (1 - w) * corrected_spectrum[b][idx_lo] + w * corrected_spectrum[b][idx_hi]
+        pred_int_norm = pred_int / (pred_int.max() + EPS)
+
+        N, M = len(pp_t), len(tf_b)
+        cost = (pp_t.unsqueeze(1) - tf_b.unsqueeze(0)).pow(2)  # (N, M)
+
+        # Sinkhorn in log-space
+        log_K = -cost / (2 * cfg.sinkhorn_tau ** 2 + EPS)
+        log_alpha = torch.log(pred_int_norm.clamp(min=EPS))
+        log_beta = torch.log(ti_norm.clamp(min=EPS))
+
+        u = torch.zeros(N, device=device)
+        v = torch.zeros(M, device=device)
+        for _ in range(cfg.sinkhorn_iters):
+            u = log_alpha - torch.logsumexp(log_K + v.unsqueeze(0), dim=1)
+            v = log_beta - torch.logsumexp(log_K + u.unsqueeze(1), dim=0)
+
+        T = torch.exp(log_K + u.unsqueeze(1) + v.unsqueeze(0))  # (N, M)
+
+        # Soft match indicator (Gaussian, σ = match_sigma cm⁻¹)
+        match_scores = torch.exp(-cost / (2 * cfg.sinkhorn_match_sigma ** 2))
+
+        soft_tp = (T * match_scores).sum()
+        soft_fp = T.sum() - soft_tp
+        soft_fn = (ti_norm.sum() - soft_tp).clamp(min=0)
+
+        soft_prec = soft_tp / (soft_tp + soft_fp + EPS)
+        soft_rec = soft_tp / (soft_tp + soft_fn + EPS)
+        soft_f1 = 2 * soft_prec * soft_rec / (soft_prec + soft_rec + EPS)
+
+        total_loss = total_loss + (1.0 - soft_f1)
+        count += 1
+
+    return total_loss / max(count, 1)
+
+
+def peak_sharpening_loss(pred_spectrum, target_positions, target_mask, x_grid_tensor):
+    """
+    Simpler alternative to Sinkhorn F1: maximize predicted spectrum amplitude
+    at known target peak positions via differentiable linear interpolation.
+    """
+    B, L = pred_spectrum.shape
+    device = pred_spectrum.device
+    x_min = float(x_grid_tensor[0])
+    x_max = float(x_grid_tensor[-1])
+    total_loss = torch.tensor(0.0, device=device)
+    count = 0
+
+    for b in range(B):
+        t_valid = target_mask[b] > 0.5
+        if t_valid.sum() < 1:
+            continue
+        tp = target_positions[b][t_valid]
+        # Differentiable readout
+        frac_idx = (tp - x_min) / (x_max - x_min + EPS) * (L - 1)
+        idx_lo = frac_idx.long().clamp(0, L - 2)
+        idx_hi = (idx_lo + 1).clamp(max=L - 1)
+        w = frac_idx - idx_lo.float()
+        vals = (1 - w) * pred_spectrum[b][idx_lo] + w * pred_spectrum[b][idx_hi]
+        total_loss = total_loss - vals.mean()  # maximize amplitude → minimize negative
+        count += 1
+
+    return total_loss / max(count, 1)
+
+
+# ---------------------------------------------------------------------------
+# Spectral U-Net evaluation helpers
+# ---------------------------------------------------------------------------
+
+def _evaluate_spectral_model_full(model, y_pred_spec, mol_features, target_freq,
+                                  target_intensity, target_mask, x_grid, splits,
+                                  device, model_name, batch_size=256):
+    """Run U-Net on all data, extract peaks, evaluate with _evaluate_coordinate_alignment."""
+    model.eval()
+    N = len(y_pred_spec)
+    corrected_all = np.zeros_like(y_pred_spec)
+
+    # Batched forward pass
+    with torch.no_grad():
+        for start in range(0, N, batch_size):
+            end = min(start + batch_size, N)
+            yp = torch.as_tensor(y_pred_spec[start:end], device=device, dtype=torch.float32)
+            mf = torch.as_tensor(mol_features[start:end], device=device, dtype=torch.float32)
+            corrected_all[start:end] = model(yp, mf).cpu().numpy()
+
+    case_rows = []
+    for i in range(N):
+        pf, pi = stats_lib._extract_peaks(x_grid, corrected_all[i])
+        pm = np.ones(len(pf), dtype=np.float32)
+
+        tf_i = target_freq[i]
+        ti_i = target_intensity[i].copy()
+        tm_i = target_mask[i]
+        t_valid = tm_i > 0.5
+        if t_valid.any() and ti_i[t_valid].max() > 0:
+            ti_i[t_valid] = ti_i[t_valid] / ti_i[t_valid].max()
+
+        metrics = _evaluate_coordinate_alignment(pf, pi, pm, tf_i, ti_i, tm_i)
+        row = {"case_index": i, "model": model_name}
+        row.update(metrics)
+        case_rows.append(row)
+
+    case_df = pd.DataFrame(case_rows)
+
+    summary_rows = []
+    for s_name, s_idx in splits.items():
+        sub = case_df.iloc[s_idx]
+        row = {"model": model_name, "split": s_name, "n_cases": len(sub)}
+        for col in ["f1@5", "f1@10", "f1@15", "f1@20", "cwmae@10", "cwmae@5",
+                     "coverage@10", "coverage@5", "point_rmse", "intensity_mae",
+                     "n_pred_kept", "n_target"]:
+            if col in sub.columns:
+                row[col] = sub[col].mean()
+        summary_rows.append(row)
+
+    summary_df = pd.DataFrame(summary_rows)
+    return case_df, summary_df, corrected_all
+
+
+# ---------------------------------------------------------------------------
+# Main entry point: run_spectral_alignment_study
+# ---------------------------------------------------------------------------
+
+def run_spectral_alignment_study(*, dft_dataset, out_dir, device="cpu",
+                                 train_config=None, **kwargs):
+    """
+    Two-phase training:
+      Phase 1 — spectrum→spectrum U-Net with spectral_loss (MSE + deriv + angle)
+      Phase 2 — freeze encoder, fine-tune decoder with Sinkhorn F1
+    """
+    cfg = train_config or SpectralAlignmentTrainConfig()
+    out_dir = Path(out_dir); out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Augment mol features with large Morgan FPs for FiLM conditioning
+    mol_features = _augment_mol_features(
+        dft_dataset.mol_features, dft_dataset.metadata, cfg.morgan_fp_bits)
+    mol_dim = mol_features.shape[1]
+
+    splits = _split_indices(len(dft_dataset), cfg.seed, cfg.val_fraction, cfg.test_fraction)
+    x_grid = dft_dataset.x_grid
+
+    # Build datasets (include target peaks for Phase 2)
+    def _make_ds(idx):
+        return SpectrumDataset(
+            dft_dataset.y_pred_spec[idx], dft_dataset.y_target_spec[idx],
+            mol_features[idx], dft_dataset.target_freq[idx],
+            dft_dataset.target_intensity[idx], dft_dataset.target_mask[idx])
+
+    train_ds = _make_ds(splits["train"])
+    val_ds = _make_ds(splits["val"])
+    train_loader = DataLoader(train_ds, batch_size=cfg.batch_size, shuffle=True)
+    val_loader = DataLoader(val_ds, batch_size=cfg.batch_size, shuffle=False)
+
+    # ===================================================================
+    # Phase 1: Spectral U-Net with spectral_loss
+    # ===================================================================
+    model = SpectralUNet1D(mol_dim, cfg).to(device)
+    opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        opt, T_max=cfg.max_epochs, eta_min=cfg.lr / 20)
+
+    best_val, patience_cnt, best_state = float("inf"), 0, None
+    print(f"Phase 1: Spectral U-Net | {device} | "
+          f"train={len(splits['train'])} val={len(splits['val'])} test={len(splits['test'])} | "
+          f"mol_dim={mol_dim} grid={len(x_grid)}")
+
+    for epoch in range(cfg.max_epochs):
+        model.train()
+        train_acc = 0.0
+        for batch in train_loader:
+            yp, yt, mf = batch[0].to(device), batch[1].to(device), batch[2].to(device)
+            opt.zero_grad()
+            corrected = model(yp, mf)
+            loss, _ = spectral_loss(corrected, yt, cfg)
+            loss.backward()
+            opt.step()
+            train_acc += loss.item()
+        scheduler.step()
+
+        model.eval()
+        val_acc = 0.0
+        with torch.no_grad():
+            for batch in val_loader:
+                yp, yt, mf = batch[0].to(device), batch[1].to(device), batch[2].to(device)
+                corrected = model(yp, mf)
+                v_loss, v_comp = spectral_loss(corrected, yt, cfg)
+                val_acc += v_loss.item()
+
+        v_mean = val_acc / max(len(val_loader), 1)
+        if v_mean < best_val:
+            best_val = v_mean
+            patience_cnt = 0
+            best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+        else:
+            patience_cnt += 1
+
+        if epoch % 10 == 0:
+            t_mean = train_acc / max(len(train_loader), 1)
+            print(f"  Epoch {epoch:4d} | train={t_mean:.5f} val={v_mean:.5f} patience={patience_cnt}")
+        if patience_cnt >= cfg.patience:
+            print(f"  Early stopping at epoch {epoch}")
+            break
+
+    if best_state is not None:
+        model.load_state_dict({k: v.to(device) for k, v in best_state.items()})
+
+    # Phase 1 evaluation
+    print("\n=== Phase 1 Evaluation ===")
+    p1_cases, p1_summary, _ = _evaluate_spectral_model_full(
+        model, dft_dataset.y_pred_spec, mol_features,
+        dft_dataset.target_freq, dft_dataset.target_intensity, dft_dataset.target_mask,
+        x_grid, splits, device, "spectral_unet_phase1", cfg.batch_size)
+    p1_test = p1_summary[p1_summary["split"] == "test"]
+    if not p1_test.empty:
+        r = p1_test.iloc[0]
+        print(f"  Phase 1 test: F1@10={r.get('f1@10',0):.3f}  "
+              f"Coverage@10={r.get('coverage@10',0):.3f}  CWMAE@10={r.get('cwmae@10',0):.2f}")
+
+    # ===================================================================
+    # Phase 2: Sinkhorn F1 fine-tune (freeze encoder, fine-tune decoder)
+    # ===================================================================
+    print("\n=== Phase 2: Sinkhorn F1 Fine-tune ===")
+    for name, param in model.named_parameters():
+        if any(tag in name for tag in ("down", "bottleneck", "film")):
+            param.requires_grad = False
+
+    n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    n_total = sum(p.numel() for p in model.parameters())
+    print(f"  Trainable: {n_trainable:,} / {n_total:,} parameters")
+
+    ft_opt = torch.optim.AdamW(
+        filter(lambda p: p.requires_grad, model.parameters()),
+        lr=cfg.finetune_lr, weight_decay=cfg.weight_decay)
+    x_grid_tensor = torch.as_tensor(x_grid, dtype=torch.float32, device=device)
+
+    best_val_ft, patience_ft, best_state_ft = float("inf"), 0, None
+    for epoch in range(cfg.finetune_epochs):
+        model.train()
+        ft_acc = 0.0
+        for batch in train_loader:
+            yp = batch[0].to(device)
+            yt = batch[1].to(device)
+            mf = batch[2].to(device)
+            tf_b = batch[3].to(device)
+            ti_b = batch[4].to(device)
+            tm_b = batch[5].to(device)
+
+            ft_opt.zero_grad()
+            corrected = model(yp, mf)
+
+            s_loss, _ = spectral_loss(corrected, yt, cfg)
+
+            # Extract peaks from corrected spectrum (non-differentiable positions)
+            with torch.no_grad():
+                pred_peaks = _batch_extract_peaks(corrected.detach().cpu().numpy(), x_grid)
+
+            sk_loss = sinkhorn_f1_loss(
+                corrected, pred_peaks, tf_b, ti_b, tm_b, x_grid_tensor, cfg)
+
+            total = (cfg.finetune_spectral_weight * s_loss
+                     + cfg.finetune_sinkhorn_weight * sk_loss)
+            total.backward()
+            ft_opt.step()
+            ft_acc += total.item()
+
+        # Validation (spectral loss only for early stopping)
+        model.eval()
+        val_ft_acc = 0.0
+        with torch.no_grad():
+            for batch in val_loader:
+                corrected = model(batch[0].to(device), batch[2].to(device))
+                v_loss, _ = spectral_loss(corrected, batch[1].to(device), cfg)
+                val_ft_acc += v_loss.item()
+
+        v_mean = val_ft_acc / max(len(val_loader), 1)
+        if v_mean < best_val_ft:
+            best_val_ft = v_mean
+            patience_ft = 0
+            best_state_ft = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+        else:
+            patience_ft += 1
+
+        if epoch % 10 == 0:
+            print(f"  FT Epoch {epoch:4d} | loss={ft_acc/max(len(train_loader),1):.5f} "
+                  f"val={v_mean:.5f} patience={patience_ft}")
+        if patience_ft >= cfg.finetune_patience:
+            print(f"  FT early stopping at epoch {epoch}")
+            break
+
+    if best_state_ft is not None:
+        model.load_state_dict({k: v.to(device) for k, v in best_state_ft.items()})
+
+    # Unfreeze all for checkpoint
+    for param in model.parameters():
+        param.requires_grad = True
+
+    ckpt_path = out_dir / "spectral_alignment_model.pth"
+    torch.save({"model_state": model.state_dict(), "cfg": cfg,
+                "mol_dim": mol_dim, "x_grid": x_grid}, ckpt_path)
+    print(f"Checkpoint saved → {ckpt_path}")
+
+    # Final evaluation
+    print("\n=== Phase 2 (Final) Evaluation ===")
+    p2_cases, p2_summary, _ = _evaluate_spectral_model_full(
+        model, dft_dataset.y_pred_spec, mol_features,
+        dft_dataset.target_freq, dft_dataset.target_intensity, dft_dataset.target_mask,
+        x_grid, splits, device, "spectral_unet_phase2", cfg.batch_size)
+
+    case_csv = out_dir / "spectral_alignment_cases.csv"
+    p2_cases.to_csv(case_csv, index=False)
+    summary_csv = out_dir / "spectral_alignment_summary.csv"
+    p2_summary.to_csv(summary_csv, index=False)
+
+    test_row = p2_summary[p2_summary["split"] == "test"]
+    if not test_row.empty:
+        r = test_row.iloc[0]
+        report = (
+            f"### Spectral U-Net Alignment Results (test set)\n"
+            f"- F1@10={r.get('f1@10',0):.3f}  Coverage@10={r.get('coverage@10',0):.3f}  "
+            f"CWMAE@10={r.get('cwmae@10',0):.2f} cm⁻¹\n"
+            f"- Point RMSE (matched@10): {r.get('point_rmse',0):.2f} cm⁻¹\n"
+            f"- Peaks detected: {r.get('n_pred_kept',0):.0f} pred vs {r.get('n_target',0):.0f} target"
+        )
+    else:
+        report = "No test split available."
+    print(report)
+
+    return {
+        "domains": {
+            "dft": {"best_model": "spectral_unet", "summary_csv": str(summary_csv),
+                    "case_csv": str(case_csv), "report_markdown": report},
+        },
+        "summary_json": str(out_dir / "summary.json"),
+        "checkpoint": str(ckpt_path),
+    }
