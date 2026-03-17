@@ -63,6 +63,7 @@ class DFTModeAlignmentDatasetBundle:
     metadata: pd.DataFrame
     cache_npz: Path
     cache_csv: Path
+    mode_features: np.ndarray | None = None  # (N, max_modes, feat_dim) eigenvector features
 
     def __len__(self) -> int:
         return int(self.pred_freq.shape[0])
@@ -95,9 +96,15 @@ class AlignmentTrainConfig:
     repulsion_radius_cm: float = 5.0
     match_cutoff: float = 15.0  # cm^-1 cutoff for ground-truth matching labels
     freq_loss_weight: float = 1.0  # weight for frequency correction loss
+    # v10: Sinkhorn OT loss (replaces Hungarian-based loss when enabled)
+    use_sinkhorn: bool = False
+    sinkhorn_tau: float = 10.0  # temperature for soft assignment (cm⁻¹)
+    sinkhorn_match_sigma: float = 10.0  # soft match width (cm⁻¹)
+    # v10: per-mode eigenvector features from hessfreq
+    mode_feature_dim: int = 0  # 12 for eigenvector features, 0 for legacy
 
 class ModeArrayDataset(Dataset):
-    def __init__(self, mol_features, pf, pi, pm, tf, ti, tm, mi, mm):
+    def __init__(self, mol_features, pf, pi, pm, tf, ti, tm, mi, mm, mode_features=None):
         self.mol_features = torch.as_tensor(mol_features, dtype=torch.float32)
         self.pf = torch.as_tensor(pf, dtype=torch.float32)
         self.pi = torch.as_tensor(pi, dtype=torch.float32)
@@ -107,12 +114,18 @@ class ModeArrayDataset(Dataset):
         self.tm = torch.as_tensor(tm, dtype=torch.float32)
         self.mi = torch.as_tensor(mi, dtype=torch.long)
         self.mm = torch.as_tensor(mm, dtype=torch.float32)
+        if mode_features is not None:
+            self.mf = torch.as_tensor(mode_features, dtype=torch.float32)
+        else:
+            # Zero-width tensor for backward compat — cat with 8-dim features is a no-op
+            self.mf = torch.zeros(pf.shape[0], pf.shape[1], 0, dtype=torch.float32)
 
     def __len__(self): return len(self.pf)
 
     def __getitem__(self, idx):
-        return (self.mol_features[idx], self.pf[idx], self.pi[idx], self.pm[idx], 
-                self.tf[idx], self.ti[idx], self.tm[idx], self.mi[idx], self.mm[idx])
+        return (self.mol_features[idx], self.pf[idx], self.pi[idx], self.pm[idx],
+                self.tf[idx], self.ti[idx], self.tm[idx], self.mi[idx], self.mm[idx],
+                self.mf[idx])
 
 class PeakCoordinateTransformer(nn.Module):
     """
@@ -132,8 +145,8 @@ class PeakCoordinateTransformer(nn.Module):
             nn.LayerNorm(cfg.latent_dim)
         )
         
-        # Peak property encoder (frequency, intensity, rank, local gaps)
-        self.peak_embed = nn.Linear(8, cfg.latent_dim)
+        # Peak property encoder (8 spectral features + optional eigenvector features)
+        self.peak_embed = nn.Linear(8 + cfg.mode_feature_dim, cfg.latent_dim)
         
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=cfg.latent_dim,
@@ -150,12 +163,14 @@ class PeakCoordinateTransformer(nn.Module):
         # v2: confidence head — "is this predicted mode real or noise?"
         self.confidence_head = nn.Linear(cfg.latent_dim, 1)
 
-    def forward(self, mol_features, pred_freq, pred_intensity, pred_mask):
+    def forward(self, mol_features, pred_freq, pred_intensity, pred_mask, mode_features=None):
         # 1. Molecule conditioning
         mol_token = self.mol_encoder(mol_features).unsqueeze(1)
 
-        # 2. Extract peak-level features (local structure)
+        # 2. Extract peak-level features (local structure + optional eigenvector features)
         peak_feats = _build_mode_features(pred_freq, pred_intensity, pred_mask, self.x_grid)
+        if mode_features is not None and mode_features.shape[-1] > 0:
+            peak_feats = torch.cat([peak_feats, mode_features], dim=-1)
         peak_tokens = self.peak_embed(peak_feats)
 
         # 3. Transformer processing (Attention over all peaks + molecule context)
@@ -261,6 +276,89 @@ def _supervised_alignment_loss(out, tf, ti, pm, tm, mi, mm, cfg):
     components = {"freq": acc_freq / count, "int": acc_int / count, "conf": acc_conf / count}
     return total_loss / count, components
 
+
+def _sinkhorn_alignment_loss(out, tf, ti, pm, tm, mi, mm, cfg):
+    """
+    v10 loss: Sinkhorn optimal transport for differentiable mode alignment.
+
+    Key advantage over Hungarian-based loss:
+    - Gradients flow through the assignment itself
+    - Unmatched modes still get gradient signal toward nearest target
+    - Naturally handles n_pred != n_target
+
+    Components: transport cost + coverage + intensity + confidence BCE.
+    """
+    pf, pi, conf = out["corrected_freq"], out["corrected_intensity"], out["confidence"]
+    batch_size = pf.shape[0]
+    total_loss = 0.0
+    acc_freq = acc_cov = acc_conf = acc_int = 0.0
+    count = 0
+
+    sigma2 = 2 * cfg.sinkhorn_match_sigma ** 2
+
+    for b in range(batch_size):
+        idx_p = pm[b] > 0.5
+        idx_t = tm[b] > 0.5
+        if not idx_p.any() or not idx_t.any():
+            continue
+
+        p_f = pf[b][idx_p]       # (n_pred,)
+        p_i = pi[b][idx_p]       # (n_pred,)
+        p_conf = conf[b][idx_p]  # (n_pred,)
+        t_f = tf[b][idx_t]       # (n_target,)
+        t_i = ti[b][idx_t]       # (n_target,)
+
+        n_pred = len(p_f)
+        n_target = len(t_f)
+
+        # Cost matrix: |pred_freq - target_freq|
+        cost = torch.abs(p_f.unsqueeze(1) - t_f.unsqueeze(0))  # (n_pred, n_target)
+
+        # Soft assignment: each pred → distribution over targets
+        P = F.softmax(-cost / cfg.sinkhorn_tau, dim=1)  # (n_pred, n_target)
+
+        # Soft match quality
+        soft_match = torch.exp(-cost ** 2 / sigma2)
+
+        # 1. Transport cost (mean frequency error weighted by assignment)
+        loss_freq = (P * cost).sum() / n_pred
+
+        # 2. Coverage: for each target, how well is it covered by predictions?
+        coverage = (P * soft_match).sum(dim=0).clamp(max=1.0)  # (n_target,)
+        loss_cov = 1.0 - coverage.mean()
+
+        # 3. Intensity (weighted by match quality)
+        per_pred_quality = (P * soft_match).sum(dim=1)  # (n_pred,)
+        t_i_max = t_i.max() + EPS
+        p_i_target = (P * (t_i / t_i_max).unsqueeze(0)).sum(dim=1)
+        loss_int = (per_pred_quality.detach() * torch.abs(p_i - p_i_target)).mean()
+
+        # 4. Confidence: predict which modes have good matches
+        conf_target = (per_pred_quality > 0.3).float().detach()
+        loss_conf = F.binary_cross_entropy(
+            p_conf.clamp(1e-6, 1 - 1e-6), conf_target, reduction="mean"
+        )
+
+        total_loss += (cfg.freq_loss_weight * loss_freq
+                       + cfg.coverage_loss_weight * loss_cov
+                       + cfg.confidence_loss_weight * loss_conf
+                       + loss_int * 0.5)
+
+        acc_freq += loss_freq.item()
+        acc_cov += loss_cov.item()
+        acc_conf += loss_conf.item()
+        acc_int += loss_int.item()
+        count += 1
+
+    if count == 0:
+        return pf.sum() * 0.0, {}
+    components = {
+        "freq": acc_freq / count, "cov": acc_cov / count,
+        "conf": acc_conf / count, "int": acc_int / count,
+    }
+    return total_loss / count, components
+
+
 def _build_mode_features(pred_freq, pred_intensity, pred_mask, x_grid):
     x_min, x_max = float(x_grid[0]), float(x_grid[-1])
     x_scale = max(x_max - x_min, 1.0)
@@ -299,7 +397,8 @@ def _build_mode_features(pred_freq, pred_intensity, pred_mask, x_grid):
 def _morgan_features(smiles_list, n_bits=128, radius=2):
     """ECFP4 Morgan fingerprints via RDKit. Falls back to SMILES hash if RDKit unavailable."""
     try:
-        from rdkit import Chem
+        from rdkit import Chem, RDLogger
+        RDLogger.logger().setLevel(RDLogger.ERROR)
         from rdkit.Chem.rdFingerprintGenerator import GetMorganGenerator
         gen = GetMorganGenerator(radius=radius, fpSize=n_bits)
         feats = []
@@ -600,13 +699,15 @@ def _load_dataset_bundle(npz_p, csv_p, domain):
 def _load_dft_mode_dataset_bundle(npz_path: Path, csv_path: Path) -> DFTModeAlignmentDatasetBundle:
     data = np.load(npz_path)
     meta = pd.read_csv(csv_path)
+    mode_features = data["mode_features"] if "mode_features" in data else None
     return DFTModeAlignmentDatasetBundle(
         domain="dft", x_grid=data["x_grid"], mol_features=data["mol_features"],
         pred_freq=data["pred_freq"], pred_intensity=data["pred_intensity"], pred_mask=data["pred_mask"],
         target_freq=data["target_freq"], target_intensity=data["target_intensity"], target_mask=data["target_mask"],
         match_target_idx=data["match_target_idx"], match_mask=data["match_mask"],
         y_pred_spec=data["y_pred_spec"], y_target_spec=data["y_target_spec"],
-        metadata=meta, cache_npz=npz_path, cache_csv=csv_path
+        metadata=meta, cache_npz=npz_path, cache_csv=csv_path,
+        mode_features=mode_features,
     )
 
 # Evaluation Logic
@@ -688,6 +789,16 @@ def run_alignment_study(*, experimental_dataset, dft_dataset, out_dir, device="c
     dft_mol = _augment_mol_features(dft_dataset.mol_features, dft_dataset.metadata, cfg.string_feature_dim)
     splits = _split_indices(len(dft_dataset), cfg.seed, cfg.val_fraction, cfg.test_fraction)
 
+    # Mode features from eigenvectors (v10)
+    dft_mode_feats = dft_dataset.mode_features  # (N, max_modes, 12) or None
+    if cfg.mode_feature_dim > 0 and dft_mode_feats is None:
+        raise ValueError(
+            "mode_feature_dim > 0 but dataset has no mode_features. "
+            "Rebuild the cache with build_dataset_cache.py."
+        )
+    if dft_mode_feats is not None:
+        print(f"Mode features: shape={dft_mode_feats.shape}, dim={dft_mode_feats.shape[-1]}")
+
     # -----------------------------------------------------------------------
     # Recompute match indices with training-time cutoff
     # (tighter cutoff = harder classification task = better confidence filtering)
@@ -702,21 +813,28 @@ def run_alignment_study(*, experimental_dataset, dft_dataset, out_dir, device="c
     match_rate = tight_matched / max(dft_dataset.pred_mask.sum(), 1) * 100
     print(f"Match cutoff={cfg.match_cutoff} cm⁻¹: {tight_matched:.0f} matched modes "
           f"({match_rate:.1f}% of predictions, was {orig_matched:.0f} at 60 cm⁻¹)")
+    loss_fn_name = "sinkhorn" if cfg.use_sinkhorn else "hungarian"
+    print(f"Loss: {loss_fn_name} | mode_feature_dim={cfg.mode_feature_dim}")
 
     # -----------------------------------------------------------------------
     # Neural model
     # -----------------------------------------------------------------------
     model = PeakCoordinateTransformer(dft_mol.shape[1], cfg, dft_dataset.x_grid).to(device)
+    n_params = sum(p.numel() for p in model.parameters())
+    print(f"Model params: {n_params:,}")
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+
+    def _slice_mode_feats(idx):
+        return dft_mode_feats[idx] if dft_mode_feats is not None else None
 
     train_ds = ModeArrayDataset(dft_mol[splits["train"]], dft_dataset.pred_freq[splits["train"]],
                                 dft_dataset.pred_intensity[splits["train"]], dft_dataset.pred_mask[splits["train"]],
                                 dft_dataset.target_freq[splits["train"]], dft_dataset.target_intensity[splits["train"]],
                                 dft_dataset.target_mask[splits["train"]], tight_mi[splits["train"]],
-                                tight_mm[splits["train"]])
-    
+                                tight_mm[splits["train"]], _slice_mode_feats(splits["train"]))
+
     loader = DataLoader(train_ds, batch_size=cfg.batch_size, shuffle=True)
-    
+
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=cfg.max_epochs, eta_min=cfg.lr / 20)
     best_val, patience_cnt = float("inf"), 0
     best_state = None
@@ -726,33 +844,37 @@ def run_alignment_study(*, experimental_dataset, dft_dataset, out_dir, device="c
                               dft_dataset.pred_intensity[splits["val"]], dft_dataset.pred_mask[splits["val"]],
                               dft_dataset.target_freq[splits["val"]], dft_dataset.target_intensity[splits["val"]],
                               dft_dataset.target_mask[splits["val"]], tight_mi[splits["val"]],
-                              tight_mm[splits["val"]])
+                              tight_mm[splits["val"]], _slice_mode_feats(splits["val"]))
     val_loader = DataLoader(val_ds, batch_size=cfg.batch_size, shuffle=False)
+
+    _loss_fn = _sinkhorn_alignment_loss if cfg.use_sinkhorn else _supervised_alignment_loss
 
     print(f"Training on {device} | train={len(splits['train'])} val={len(splits['val'])} test={len(splits['test'])}")
     for epoch in range(cfg.max_epochs):
         model.train()
         l_acc = 0.0
         for b in loader:
-            mol, pf, pi, pm, tf, ti, tm, mi, mm = [x.to(device) for x in b]
+            mol, pf, pi, pm, tf, ti, tm, mi, mm, mf = [x.to(device) for x in b]
             opt.zero_grad()
-            out = model(mol, pf, pi, pm)
-            loss, comp = _supervised_alignment_loss(out, tf, ti, pm, tm, mi, mm, cfg)
+            out = model(mol, pf, pi, pm, mf)
+            loss, comp = _loss_fn(out, tf, ti, pm, tm, mi, mm, cfg)
             loss.backward()
             opt.step()
             l_acc += loss.item()
         scheduler.step()
 
         # Validation for early stopping
-        model.eval(); v_acc = 0.0; v_comp_acc = {"freq": 0.0, "int": 0.0, "conf": 0.0}
+        model.eval()
+        v_acc = 0.0
+        v_comp_acc = {}
         with torch.no_grad():
             for b in val_loader:
-                mol, pf, pi, pm, tf, ti, tm, mi, mm = [x.to(device) for x in b]
-                out = model(mol, pf, pi, pm)
-                v_loss_b, v_comp = _supervised_alignment_loss(out, tf, ti, pm, tm, mi, mm, cfg)
+                mol, pf, pi, pm, tf, ti, tm, mi, mm, mf = [x.to(device) for x in b]
+                out = model(mol, pf, pi, pm, mf)
+                v_loss_b, v_comp = _loss_fn(out, tf, ti, pm, tm, mi, mm, cfg)
                 v_acc += v_loss_b.item()
-                for k in v_comp_acc:
-                    v_comp_acc[k] += v_comp.get(k, 0.0)
+                for k, v in v_comp.items():
+                    v_comp_acc[k] = v_comp_acc.get(k, 0.0) + v
         n_vb = max(len(val_loader), 1)
         v_loss = v_acc / n_vb
         if v_loss < best_val:
@@ -763,8 +885,9 @@ def run_alignment_study(*, experimental_dataset, dft_dataset, out_dir, device="c
             patience_cnt += 1
         if epoch % 10 == 0:
             vc = {k: v / n_vb for k, v in v_comp_acc.items()}
+            comp_str = " ".join(f"{k}={v:.4f}" for k, v in vc.items())
             print(f"Epoch {epoch:4d} | train={l_acc/len(loader):.4f} val={v_loss:.4f} "
-                  f"[freq={vc['freq']:.4f} int={vc['int']:.4f} conf={vc['conf']:.4f}] patience={patience_cnt}")
+                  f"[{comp_str}] patience={patience_cnt}")
         if patience_cnt >= cfg.patience:
             print(f"Early stopping at epoch {epoch}")
             break
@@ -779,11 +902,14 @@ def run_alignment_study(*, experimental_dataset, dft_dataset, out_dir, device="c
     print(f"Checkpoint saved → {ckpt_path}")
 
     model.eval()
+    mf_all = (torch.as_tensor(dft_mode_feats, device=device, dtype=torch.float32)
+              if dft_mode_feats is not None else None)
     with torch.no_grad():
         pred = model(torch.as_tensor(dft_mol, device=device),
                      torch.as_tensor(dft_dataset.pred_freq, device=device, dtype=torch.float32),
                      torch.as_tensor(dft_dataset.pred_intensity, device=device, dtype=torch.float32),
-                     torch.as_tensor(dft_dataset.pred_mask, device=device, dtype=torch.float32))
+                     torch.as_tensor(dft_dataset.pred_mask, device=device, dtype=torch.float32),
+                     mf_all)
         pf_corr = pred["corrected_freq"].cpu().numpy()
         pi_corr = pred["corrected_intensity"].cpu().numpy()
         conf_arr = pred["confidence"].cpu().numpy()
@@ -957,28 +1083,30 @@ class SpectralAlignmentTrainConfig:
 
 class _ResConvBlock1D(nn.Module):
     """Residual 1D conv block with k=5 kernel."""
-    def __init__(self, channels, kernel_size=5):
+    def __init__(self, channels, kernel_size=5, dropout=0.1):
         super().__init__()
         pad = kernel_size // 2
         self.conv1 = nn.Conv1d(channels, channels, kernel_size, padding=pad)
         self.bn1 = nn.BatchNorm1d(channels)
         self.conv2 = nn.Conv1d(channels, channels, kernel_size, padding=pad)
         self.bn2 = nn.BatchNorm1d(channels)
+        self.drop = nn.Dropout(dropout)
 
     def forward(self, x):
         res = x
         x = F.gelu(self.bn1(self.conv1(x)))
+        x = self.drop(x)
         x = self.bn2(self.conv2(x))
         return F.gelu(x + res)
 
 
 class _DownBlock(nn.Module):
-    def __init__(self, in_ch, out_ch, kernel_size=5):
+    def __init__(self, in_ch, out_ch, kernel_size=5, dropout=0.1):
         super().__init__()
         pad = kernel_size // 2
         self.conv = nn.Conv1d(in_ch, out_ch, kernel_size, padding=pad)
         self.bn = nn.BatchNorm1d(out_ch)
-        self.res = _ResConvBlock1D(out_ch, kernel_size)
+        self.res = _ResConvBlock1D(out_ch, kernel_size, dropout)
         self.pool = nn.MaxPool1d(2)
 
     def forward(self, x):
@@ -988,13 +1116,13 @@ class _DownBlock(nn.Module):
 
 
 class _UpBlock(nn.Module):
-    def __init__(self, in_ch, skip_ch, out_ch, kernel_size=5):
+    def __init__(self, in_ch, skip_ch, out_ch, kernel_size=5, dropout=0.1):
         super().__init__()
         self.up = nn.ConvTranspose1d(in_ch, in_ch, kernel_size=2, stride=2)
         pad = kernel_size // 2
         self.conv = nn.Conv1d(in_ch + skip_ch, out_ch, kernel_size, padding=pad)
         self.bn = nn.BatchNorm1d(out_ch)
-        self.res = _ResConvBlock1D(out_ch, kernel_size)
+        self.res = _ResConvBlock1D(out_ch, kernel_size, dropout)
 
     def forward(self, x, skip):
         x = self.up(x)
@@ -1031,13 +1159,14 @@ class _FiLMLayer(nn.Module):
 class SpectralUNet1D(nn.Module):
     """
     1D U-Net for spectrum→spectrum alignment.
-    4 levels (32→64→128→256 channels), k=5 residual conv blocks,
+    Learns a residual correction: output = clamp(input + delta, 0, 1).
+    4 levels (16→32→64→128 channels), k=5 residual conv blocks,
     FiLM conditioning at bottleneck on molecule features.
     """
     def __init__(self, mol_dim: int, cfg: SpectralAlignmentTrainConfig):
         super().__init__()
         self.cfg = cfg
-        ch = [32, 64, 128, 256]
+        ch = [16, 32, 64, 128]
 
         self.down0 = _DownBlock(1, ch[0])
         self.down1 = _DownBlock(ch[0], ch[1])
@@ -1053,6 +1182,9 @@ class SpectralUNet1D(nn.Module):
         self.up0 = _UpBlock(ch[0], ch[0], ch[0])
 
         self.head = nn.Conv1d(ch[0], 1, kernel_size=1)
+        # Initialize head near zero so initial output ≈ input
+        nn.init.zeros_(self.head.weight)
+        nn.init.zeros_(self.head.bias)
 
     def forward(self, spectrum, mol_features):
         # spectrum: (B, L) → (B, 1, L)
@@ -1077,9 +1209,9 @@ class SpectralUNet1D(nn.Module):
         x = self.up1(x, s1)
         x = self.up0(x, s0)
 
-        x = self.head(x).squeeze(1)        # (B, padded_L)
-        x = x[..., :orig_len]              # crop to original length
-        return torch.sigmoid(x)
+        delta = self.head(x).squeeze(1)    # (B, padded_L)
+        delta = delta[..., :orig_len]      # crop to original length
+        return (spectrum + delta).clamp(0, 1)
 
 
 class SpectrumDataset(Dataset):

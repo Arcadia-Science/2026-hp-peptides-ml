@@ -160,9 +160,9 @@ def train_alignment(
         cfg = lib.SpectralAlignmentTrainConfig(
             max_epochs=max_epochs,
             batch_size=64,
-            patience=30,
-            morgan_fp_bits=2048,
-            film_dim=256,
+            patience=40,
+            morgan_fp_bits=512,
+            film_dim=128,
             finetune_epochs=50,
             finetune_lr=1e-4,
             finetune_patience=20,
@@ -175,9 +175,46 @@ def train_alignment(
             device=device,
             train_config=cfg,
         )
+    elif model_type == "peak_v10":
+        # -------------------------------------------------------------------
+        # v10: Peak transformer + eigenvector features + Sinkhorn OT loss
+        # -------------------------------------------------------------------
+        cfg = lib.AlignmentTrainConfig(
+            max_epochs=max_epochs,
+            batch_size=256,
+            patience=40,
+            latent_dim=latent_dim,
+            transformer_layers=transformer_layers,
+            transformer_heads=transformer_heads,
+            coverage_loss_weight=coverage_loss_weight,
+            coverage_target_cm=10.0,
+            lr=3e-4,
+            weight_decay=1e-3,
+            string_feature_dim=128,
+            match_cutoff=15.0,
+            confidence_loss_weight=1.0,
+            confidence_threshold=0.5,
+            freq_loss_weight=1.0,
+            repulsion_loss_weight=0.0,
+            repulsion_radius_cm=5.0,
+            # v10: Sinkhorn + eigenvector features
+            use_sinkhorn=True,
+            sinkhorn_tau=10.0,
+            sinkhorn_match_sigma=10.0,
+            mode_feature_dim=12,
+        )
+        print("Config:", cfg)
+
+        results = lib.run_alignment_study(
+            experimental_dataset=None,
+            dft_dataset=dataset,
+            out_dir=out_dir,
+            device=device,
+            train_config=cfg,
+        )
     else:
         # -------------------------------------------------------------------
-        # Peak coordinate transformer path (existing)
+        # Peak coordinate transformer path (legacy v2-v7)
         # -------------------------------------------------------------------
         cfg = lib.AlignmentTrainConfig(
             max_epochs=max_epochs,
