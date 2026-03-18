@@ -109,6 +109,9 @@ class AlignmentTrainConfig:
     soft_f1_tol: float = 10.0    # match tolerance (cm⁻¹) — same as eval F1@10
     soft_f1_tau: float = 3.0     # sigmoid temperature (anneal warm→cold during training)
     soft_f1_tau_min: float = 0.5 # final tau after annealing
+    # v13: True Sinkhorn + coupled confidence + supervised conf targets
+    use_v13: bool = False
+    sinkhorn_iters: int = 20
 
 @dataclass
 class AlignmentRLConfig:
@@ -508,6 +511,107 @@ def _soft_f1_loss(out, tf, ti, pm, tm, mi, mm, cfg):
         acc_f1 += soft_f1.item()
         acc_int += loss_int.item()
         acc_conf += soft_n_pred.item() / n_pred  # fraction kept
+        count += 1
+
+    if count == 0:
+        return pf_all.sum() * 0.0, {}
+    components = {
+        "soft_f1": acc_f1 / count, "int": acc_int / count,
+        "conf_frac": acc_conf / count,
+    }
+    return total_loss / count, components
+
+
+def _v13_soft_f1_loss(out, tf, ti, pm, tm, mi, mm, cfg):
+    """
+    v13 loss: True Sinkhorn + coupled confidence + supervised conf targets.
+
+    Key differences from v11 (_soft_f1_loss):
+    1. True Sinkhorn iterations in log-space (not row-softmax)
+    2. Confidence coupled in F1 numerator AND p_conf.sum() in denominator (like v11)
+    3. Supervised confidence BCE from Sinkhorn assignment quality (stabilizes conf)
+    4. No do-no-harm, no fixed mask, no REINFORCE — single clean objective
+
+    tau is read from cfg.soft_f1_tau (annealed by training loop).
+    """
+    pf_all = out["corrected_freq"]
+    pi_all = out["corrected_intensity"]
+    conf_all = out["confidence"]
+    batch_size = pf_all.shape[0]
+    total_loss = 0.0
+    acc_f1 = acc_conf = acc_int = 0.0
+    count = 0
+
+    tol = cfg.soft_f1_tol
+    tau = cfg.soft_f1_tau
+
+    for b in range(batch_size):
+        idx_p = pm[b] > 0.5
+        idx_t = tm[b] > 0.5
+        if not idx_p.any() or not idx_t.any():
+            continue
+
+        p_f = pf_all[b][idx_p]
+        p_i = pi_all[b][idx_p]
+        p_conf = conf_all[b][idx_p]
+        t_f = tf[b][idx_t]
+        t_i = ti[b][idx_t]
+        n_pred = len(p_f)
+        n_target = len(t_f)
+
+        # Distance and cost matrix
+        dist = torch.abs(p_f.unsqueeze(1) - t_f.unsqueeze(0))  # (n_pred, n_target)
+        cost = dist ** 2  # squared distance for Sinkhorn kernel
+
+        # --- True Sinkhorn in log-space (uniform marginals) ---
+        log_K = -cost / (2 * cfg.sinkhorn_tau ** 2 + EPS)
+        u = torch.zeros(n_pred, device=p_f.device)
+        v = torch.zeros(n_target, device=p_f.device)
+        for _ in range(cfg.sinkhorn_iters):
+            u = -torch.logsumexp(log_K + v.unsqueeze(0), dim=1)
+            v = -torch.logsumexp(log_K + u.unsqueeze(1), dim=0)
+        P = torch.exp(log_K + u.unsqueeze(1) + v.unsqueeze(0))  # (n_pred, n_target)
+
+        # Soft match: sigmoid threshold at `tol` cm⁻¹
+        soft_match = torch.sigmoid((tol - dist) / tau)  # (n_pred, n_target)
+
+        # --- Coupled confidence in F1 (like v11) ---
+        # weighted_match_ij = P_ij * soft_match_ij * conf_i
+        weighted = P * soft_match * p_conf.unsqueeze(1)  # (n_pred, n_target)
+        target_covered = weighted.sum(dim=0).clamp(max=1.0)  # (n_target,)
+        soft_tp = target_covered.sum()
+
+        # Soft n_pred_kept = sum of confidences (differentiable count)
+        soft_n_pred = p_conf.sum()
+
+        # Soft F1 = 2*TP / (n_pred_kept + n_target)
+        soft_f1 = 2 * soft_tp / (soft_n_pred + n_target + EPS)
+        loss_f1 = 1.0 - soft_f1
+
+        # --- Supervised confidence BCE from Sinkhorn quality ---
+        per_pred_quality = (P * soft_match).sum(dim=1)  # (n_pred,) how well each pred matches
+        conf_target = (per_pred_quality > 0.3).float().detach()
+        loss_conf = F.binary_cross_entropy(
+            p_conf.clamp(1e-6, 1 - 1e-6), conf_target, reduction="mean"
+        )
+
+        # --- Intensity loss on well-matched pairs ---
+        t_i_max = t_i.max() + EPS
+        p_i_target = (P * (t_i / t_i_max).unsqueeze(0)).sum(dim=1)
+        loss_int = (per_pred_quality.detach() * torch.abs(p_i - p_i_target)).mean()
+
+        # Confidence entropy regularization (mild, just prevent exact 0/1)
+        conf_ent = -(p_conf * torch.log(p_conf + EPS)
+                     + (1 - p_conf) * torch.log(1 - p_conf + EPS)).mean()
+
+        total_loss += (cfg.freq_loss_weight * loss_f1
+                       + cfg.confidence_loss_weight * loss_conf
+                       + 0.5 * loss_int
+                       - 0.01 * conf_ent)
+
+        acc_f1 += soft_f1.item()
+        acc_conf += soft_n_pred.item() / n_pred  # fraction kept
+        acc_int += loss_int.item()
         count += 1
 
     if count == 0:
@@ -1148,7 +1252,7 @@ def run_alignment_study(*, experimental_dataset, dft_dataset, out_dir, device="c
     match_rate = tight_matched / max(dft_dataset.pred_mask.sum(), 1) * 100
     print(f"Match cutoff={cfg.match_cutoff} cm⁻¹: {tight_matched:.0f} matched modes "
           f"({match_rate:.1f}% of predictions, was {orig_matched:.0f} at 60 cm⁻¹)")
-    loss_fn_name = "sinkhorn" if cfg.use_sinkhorn else "hungarian"
+    loss_fn_name = "v13_sinkhorn_f1" if cfg.use_v13 else ("soft_f1" if cfg.use_soft_f1 else ("sinkhorn" if cfg.use_sinkhorn else "hungarian"))
     print(f"Loss: {loss_fn_name} | mode_feature_dim={cfg.mode_feature_dim}")
 
     # -----------------------------------------------------------------------
@@ -1173,6 +1277,7 @@ def run_alignment_study(*, experimental_dataset, dft_dataset, out_dir, device="c
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=cfg.max_epochs, eta_min=cfg.lr / 20)
     best_val, patience_cnt = float("inf"), 0
     best_state = None
+    _tau_init = cfg.soft_f1_tau  # save initial tau for fresh annealing each epoch
 
     # Build tiny val loader for early stopping
     val_ds = ModeArrayDataset(dft_mol[splits["val"]], dft_dataset.pred_freq[splits["val"]],
@@ -1182,7 +1287,9 @@ def run_alignment_study(*, experimental_dataset, dft_dataset, out_dir, device="c
                               tight_mm[splits["val"]], _slice_mode_feats(splits["val"]))
     val_loader = DataLoader(val_ds, batch_size=cfg.batch_size, shuffle=False)
 
-    if cfg.use_soft_f1:
+    if cfg.use_v13:
+        _loss_fn = _v13_soft_f1_loss
+    elif cfg.use_soft_f1:
         _loss_fn = _soft_f1_loss
     elif cfg.use_sinkhorn:
         _loss_fn = _sinkhorn_alignment_loss
@@ -1245,10 +1352,10 @@ def run_alignment_study(*, experimental_dataset, dft_dataset, out_dir, device="c
             l_acc += loss.item()
         scheduler.step()
 
-        # Anneal soft-F1 temperature (warm → cold)
-        if cfg.use_soft_f1 and cfg.soft_f1_tau > cfg.soft_f1_tau_min:
+        # Anneal soft-F1 temperature (warm → cold) — fresh from initial each epoch
+        if (cfg.use_soft_f1 or cfg.use_v13) and _tau_init > cfg.soft_f1_tau_min:
             frac = epoch / max(cfg.max_epochs - 1, 1)
-            cfg.soft_f1_tau = cfg.soft_f1_tau * (1 - frac) + cfg.soft_f1_tau_min * frac
+            cfg.soft_f1_tau = _tau_init * (1 - frac) + cfg.soft_f1_tau_min * frac
 
         # Validation for early stopping
         model.eval()
@@ -1264,17 +1371,44 @@ def run_alignment_study(*, experimental_dataset, dft_dataset, out_dir, device="c
                     v_comp_acc[k] = v_comp_acc.get(k, 0.0) + v
         n_vb = max(len(val_loader), 1)
         v_loss = v_acc / n_vb
+
+        # Hard F1@10 on val set (for v13 logging — actual metric we care about)
+        val_hard_f1 = None
+        if cfg.use_v13 and epoch % 5 == 0:
+            _val_f1s = []
+            with torch.no_grad():
+                for b in val_loader:
+                    mol, pf, pi, pm, tf_b, ti_b, tm_b, mi_b, mm_b, mf = [x.to(device) for x in b]
+                    out_v = model(mol, pf, pi, pm, mf)
+                    cf_np = out_v["corrected_freq"].cpu().numpy()
+                    ci_np = out_v["corrected_intensity"].cpu().numpy()
+                    co_np = out_v["confidence"].cpu().numpy()
+                    pm_np = pm.cpu().numpy()
+                    tf_np = tf_b.cpu().numpy()
+                    ti_np = ti_b.cpu().numpy()
+                    tm_np = tm_b.cpu().numpy()
+                    for j in range(cf_np.shape[0]):
+                        m = _evaluate_coordinate_alignment(
+                            cf_np[j], ci_np[j], pm_np[j],
+                            tf_np[j], ti_np[j], tm_np[j],
+                            confidence=co_np[j], conf_threshold=cfg.confidence_threshold,
+                        )
+                        _val_f1s.append(m["f1@10"])
+            val_hard_f1 = np.mean(_val_f1s) if _val_f1s else 0.0
+
         if v_loss < best_val:
             best_val = v_loss
             patience_cnt = 0
             best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
         else:
             patience_cnt += 1
-        if epoch % 10 == 0:
+        if epoch % 5 == 0:
             vc = {k: v / n_vb for k, v in v_comp_acc.items()}
             comp_str = " ".join(f"{k}={v:.4f}" for k, v in vc.items())
+            f1_str = f" hard_F1@10={val_hard_f1:.3f}" if val_hard_f1 is not None else ""
+            tau_str = f" tau={cfg.soft_f1_tau:.2f}" if (cfg.use_soft_f1 or cfg.use_v13) else ""
             print(f"Epoch {epoch:4d} | train={l_acc/len(loader):.4f} val={v_loss:.4f} "
-                  f"[{comp_str}] patience={patience_cnt}")
+                  f"[{comp_str}]{f1_str}{tau_str} patience={patience_cnt}")
         if patience_cnt >= cfg.patience:
             print(f"Early stopping at epoch {epoch}")
             break

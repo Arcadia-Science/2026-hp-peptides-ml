@@ -265,6 +265,46 @@ def train_alignment(
             train_config=cfg,
         )
 
+    elif model_type == "peak_v13":
+        # -------------------------------------------------------------------
+        # v13: True Sinkhorn + coupled confidence + supervised conf targets
+        # Single-phase clean objective — no dnh, no fixed mask, no REINFORCE
+        # -------------------------------------------------------------------
+        cfg = lib.AlignmentTrainConfig(
+            max_epochs=max_epochs,
+            batch_size=256,
+            patience=40,
+            latent_dim=latent_dim,
+            transformer_layers=transformer_layers,
+            transformer_heads=transformer_heads,
+            lr=3e-4,
+            weight_decay=1e-3,
+            string_feature_dim=128,
+            match_cutoff=15.0,
+            mode_feature_dim=12,
+            # v13: true Sinkhorn + coupled confidence
+            use_v13=True,
+            sinkhorn_iters=20,
+            sinkhorn_tau=10.0,
+            soft_f1_tol=10.0,
+            soft_f1_tau=3.0,
+            soft_f1_tau_min=0.5,
+            # Confidence supervision from Sinkhorn quality
+            confidence_loss_weight=1.0,
+            confidence_threshold=0.5,
+            freq_loss_weight=1.0,
+            coverage_loss_weight=0.0,  # not used in v13 loss
+        )
+        print("v13 Config:", cfg)
+
+        results = lib.run_alignment_study(
+            experimental_dataset=None,
+            dft_dataset=dataset,
+            out_dir=out_dir,
+            device=device,
+            train_config=cfg,
+        )
+
     elif model_type == "peak_v12":
         # -------------------------------------------------------------------
         # v12: Hybrid Soft-F1 + REINFORCE keep/drop (two-phase training)
