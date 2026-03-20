@@ -120,7 +120,7 @@ def _filter_visible_lines(freq: np.ndarray, intensity: np.ndarray, min_rel_inten
     return freq[mask], intensity[mask]
 
 
-def _prepare_mode_lines(freq: np.ndarray, intensity: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def _prepare_mode_lines(freq: np.ndarray, intensity: np.ndarray, *, filter_visible: bool = False) -> tuple[np.ndarray, np.ndarray]:
     freq = _safe_array(freq)
     intensity = _safe_array(intensity)
     if freq.size == 0 or intensity.size == 0:
@@ -131,7 +131,10 @@ def _prepare_mode_lines(freq: np.ndarray, intensity: np.ndarray) -> tuple[np.nda
     mask = np.isfinite(freq) & np.isfinite(intensity) & (freq > 1e-8)
     if not mask.any():
         return np.asarray([], dtype=np.float64), np.asarray([], dtype=np.float64)
-    return freq[mask], _normalize_intensity(intensity[mask])
+    freq_out, int_out = freq[mask], _normalize_intensity(intensity[mask])
+    if filter_visible:
+        freq_out, int_out = _filter_visible_lines(freq_out, int_out)
+    return freq_out, int_out
 
 
 def _decode_dft_blob(blob: bytes) -> dict[str, Any]:
@@ -2257,6 +2260,7 @@ def run_raman_stats_analysis(
     dft_scan_limit: int | None = None,
     base_freq_scale_factor: float = 1.0,
     dft_sample_seed: int = DFT_SAMPLE_SEED,
+    filter_visible_lines: bool = False,
 ) -> dict[str, Any]:
     del session, component_name_candidates, fetch_pubchem_name_record
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -2434,14 +2438,14 @@ def run_raman_stats_analysis(
                 continue
             if len(atoms) > int(max_atoms_for_inference):
                 continue
-            dft_freq_all, dft_int_all = _prepare_mode_lines(dft_freq_raw, dft_int_raw)
+            dft_freq_all, dft_int_all = _prepare_mode_lines(dft_freq_raw, dft_int_raw, filter_visible=filter_visible_lines)
             if dft_freq_all.size == 0:
                 continue
             try:
                 y_pred, pred_freq_raw, pred_int_raw = predict_fn(coords, atoms, x_grid)
             except Exception:
                 continue
-            pred_freq_all, pred_int_all = _prepare_mode_lines(pred_freq_raw, pred_int_raw)
+            pred_freq_all, pred_int_all = _prepare_mode_lines(pred_freq_raw, pred_int_raw, filter_visible=False)  # never filter by predicted intensity — too unreliable
             spec_dft = _normalize_intensity(lines_to_norm_spectrum(dft_freq_raw, dft_int_raw, x_grid, sigma=float(sigma), temp=float(temp), init_wl=float(init_wl)))
             pred_peak_freq, pred_peak_int = _extract_peaks(x_grid, _normalize_intensity(y_pred))
             dft_peak_freq, dft_peak_int = _extract_peaks(x_grid, spec_dft)
@@ -2730,13 +2734,13 @@ def run_raman_stats_analysis(
         & (mandatory_case_df["tol_cm"] == 10.0)
     ].sort_values(["precision", "coverage_any"], ascending=[True, False]).head(10)
     gotcha_fingerprint_missed = mandatory_case_df[
-        (mandatory_case_df["pair"] == "DFT->Pred")
+        (mandatory_case_df["pair"].isin(["DFT->Pred", "Exp->Pred"]))
         & (mandatory_case_df["region"] == "fingerprint")
         & (mandatory_case_df["tol_cm"] == 10.0)
         & (mandatory_case_df["benchmark"].isin(["dft_peak", "experimental_peak"]))
     ].sort_values("missed_pct", ascending=False).head(10)
     gotcha_drift = mandatory_case_df[
-        (mandatory_case_df["pair"] == "DFT->Pred")
+        (mandatory_case_df["pair"].isin(["DFT->Pred", "Exp->Pred"]))
         & (mandatory_case_df["tol_cm"] == 10.0)
         & (mandatory_case_df["benchmark"].isin(["dft_peak", "experimental_peak"]))
     ].assign(abs_shift=lambda df: df["mean_signed_dnu_cm"].abs()).sort_values("abs_shift", ascending=False).head(10)
