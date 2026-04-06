@@ -57,7 +57,7 @@ curl -X POST "http://localhost:8000/predict/raman" \
 
 ## Key Results
 
-| Metric | Baseline (raw) | +ES Refined | Mol2Raman (in-dist) |
+| Metric | Baseline (raw, OOD) | +ES Refined OOD | Mol2Raman (in-dist) |
 |--------|---------------|-------------|---------------------|
 | FP F1@15 | 0.426 | 0.532 | 0.631 |
 | FP Recall@15 | 0.438 | **0.703** | 0.634 |
