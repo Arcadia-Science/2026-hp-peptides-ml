@@ -43,7 +43,7 @@ pip install -r requirements.txt -f https://data.pyg.org/whl/torch-2.8.0+cpu.html
 python scripts/ingest/build_parquet.py --dataset qm9s --zip capsule-3259363/data/qm9s_csv.zip --out data/processed --shard-size 1000
 ```
 
-### Start services
+### Start some services
 ```bash
 docker-compose up --build
 ```
