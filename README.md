@@ -28,7 +28,6 @@ ramanchembl_pipeline/     Evaluation, stats, alignment, ES refinement
   stats_v2.ipynb          Main stats notebook (generates paper figures)
 paper/                    Manuscript (LaTeX)
   figures/                Paper figures (PNG/PDF/SVG)
-  figures_arcadia.ipynb   Arcadia-styled figure restyle notebook
 ```
 
 ## Quickstart
