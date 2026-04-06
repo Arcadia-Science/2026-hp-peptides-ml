@@ -26,7 +26,7 @@ ramanchembl_pipeline/     Evaluation, stats, alignment, ES refinement
   alignment_results/      ES refinement checkpoints + eval
   stats_notebook_lib.py   Plotting + analysis library
   stats_v2.ipynb          Main stats notebook (generates paper figures)
-paper/                    TMLR manuscript (LaTeX)
+paper/                    Manuscript (LaTeX)
   figures/                Paper figures (PNG/PDF/SVG)
   figures_arcadia.ipynb   Arcadia-styled figure restyle notebook
 ```
