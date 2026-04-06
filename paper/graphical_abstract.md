@@ -188,27 +188,6 @@ flowchart LR
     style WHY fill:#E3F2FD,stroke:#1565C0
 ```
 
-## Paper Narrative Arc
-
-### Act 1: The Foundation (Sections 1-3)
-> A 7M-parameter equivariant GNN, adapted via ELoRA/AdaLoRA, predicts the full Hessian matrix + polarizability derivatives from 3D geometry alone. The embedding layer is extended to the full periodic table, enabling inference on any molecule.
-
-### Act 2: The Zero-Shot Challenge (Section 4)
-> Evaluated entirely out-of-distribution on drug-like RamanChemBL molecules (median 24 heavy atoms, elements S/Cl/Br/P/Se) — a chemical space fundamentally different from the QM9/SPICE training data. No Raman supervision was ever provided.
-
-### Act 3: What Works (Section 5.1)
-> The Hessian surrogate recovers 67% of vibrational modes at DFT-level accuracy (3.56 cm⁻¹ median error). The model produces the correct *number* of modes (ratio 0.96, r=0.995). Frequency prediction is the success story.
-
-### Act 4: What Doesn't (Section 5.2)
-> Intensity prediction (~7× error) is the bottleneck, consistent with the fundamental difficulty of polarizability derivatives. This limits spectral fidelity but not thermochemical applications.
-
-### Act 5: The Fix (Section 5.3 — NEW)
-> A spectral refinement network (1D U-Net, FiLM-conditioned on molecular fingerprint) is trained in two phases: (1) peak-weighted RMSE for spectral denoising, (2) evolution strategies for direct F1 optimization. ES directly hill-climbs the non-differentiable F1 metric by perturbing model weights — the only approach that worked after REINFORCE and differentiable surrogates failed. F1@15 improves from 0.37 → 0.52+ (still climbing).
-
-### Act 6: The Tool (Section 6-7)
-> SpectraLoRA is not a Raman spectrometer replacement. It is a high-throughput physical surrogate: accurate enough for thermochemistry (ZPE, entropy), rough spectral screening, and peak assignment assistance, with amplitude calibration as the identified target for future work. The ES refinement demonstrates that black-box optimization can bridge the gap between physical prediction and spectroscopic metrics.
-
----
 
 ## Figures Checklist
 
@@ -224,4 +203,4 @@ flowchart LR
 | 8 | Tolerance sweep | ✓ | `figures/stats_tolerance_sweep.png` |
 | 9 | ES convergence curve | ✓ | `artifacts/refinement_v8/.../fig_es_convergence.png` |
 | 10 | ES before/after spectra | ✓ | `artifacts/refinement_v8/.../fig_before_after.png` |
-| 11 | ES before/after (v9, final) | ⏳ | waiting for v9 to finish |
+| 11 | ES before/after (v9, final) | ⏳ |
