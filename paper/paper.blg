@@ -1,0 +1,50 @@
+This is BibTeX, Version 0.99e (TeX Live 2026)
+Capacity: max_strings=200000, hash_size=200000, hash_prime=170003
+The top-level auxiliary file: paper.aux
+The style file: tmlr.bst
+Database file #1: main.bib
+Warning--empty journal in radford2018improving
+Warning--empty year in radford2018improving
+Warning--empty year in radford2018improving
+You've used 79 entries,
+            2773 wiz_defined-function locations,
+            1062 strings with 30999 characters,
+and the built_in function-call counts, 67638 in all, are:
+= -- 5060
+> -- 7876
+< -- 22
++ -- 2633
+- -- 2554
+* -- 6906
+:= -- 11327
+add.period$ -- 272
+call.type$ -- 79
+change.case$ -- 1074
+chr.to.int$ -- 79
+cite$ -- 161
+duplicate$ -- 1619
+empty$ -- 2937
+format.name$ -- 2656
+if$ -- 13155
+int.to.chr$ -- 1
+int.to.str$ -- 1
+missing$ -- 73
+newline$ -- 438
+num.names$ -- 318
+pop$ -- 2083
+preamble$ -- 1
+purify$ -- 999
+quote$ -- 0
+skip$ -- 1836
+stack$ -- 0
+substring$ -- 1131
+swap$ -- 103
+text.length$ -- 2
+text.prefix$ -- 0
+top$ -- 0
+type$ -- 859
+warning$ -- 3
+while$ -- 306
+width$ -- 0
+write$ -- 1074
+(There were 3 warnings)

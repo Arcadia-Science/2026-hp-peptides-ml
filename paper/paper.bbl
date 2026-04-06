@@ -1,0 +1,438 @@
+\begin{thebibliography}{79}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Andersson \& Uvdal(2005)Andersson and Uvdal]{andersson2005new}
+Martin~P Andersson and Per Uvdal.
+\newblock New scale factors for harmonic vibrational frequencies using the {B3LYP} density functional method with the triple-$\zeta$ basis set {6-311+G(d,p)}.
+\newblock \emph{The Journal of Physical Chemistry A}, 109\penalty0 (12):\penalty0 2937--2941, 2005.
+
+\bibitem[Avasthi et~al.(2023)Avasthi, Patton, and York]{avasthi2023raman}
+Prachee Avasthi, Austin~H Patton, and Ryan York.
+\newblock Raman spectra reflect complex phylogenetic relationships.
+\newblock \emph{The Stacks}, 2023.
+
+\bibitem[Avasthi et~al.(2024)Avasthi, Bigge, Braverman, Essock-Burns, Lane, Mets, Patton, and York]{avasthi2024raman}
+Prachee Avasthi, Brae~M Bigge, Ben Braverman, Tara Essock-Burns, Ryan Lane, David~G Mets, Austin~H Patton, and Ryan York.
+\newblock Raman spectroscopy enables rapid and inexpensive exploration of biology.
+\newblock \emph{The Stacks}, 2024.
+
+\bibitem[Batatia et~al.(2022)Batatia, Kovacs, Simm, Ortner, and Cs{\'a}nyi]{batatia2022mace}
+Ilyes Batatia, David~P Kovacs, Gregor Simm, Christoph Ortner, and G{\'a}bor Cs{\'a}nyi.
+\newblock Mace: Higher order equivariant message passing neural networks for fast and accurate force fields.
+\newblock \emph{Advances in neural information processing systems}, 35:\penalty0 11423--11436, 2022.
+
+\bibitem[Batatia et~al.(2025)Batatia, Benner, Chiang, Elena, Kov{\'a}cs, Riebesell, Advincula, Asta, Avaylon, Baldwin, et~al.]{MACE-MP}
+Ilyes Batatia, Philipp Benner, Yuan Chiang, Alin~M Elena, D{\'a}vid~P Kov{\'a}cs, Janosh Riebesell, Xavier~R Advincula, Mark Asta, Matthew Avaylon, William~J Baldwin, et~al.
+\newblock A foundation model for atomistic materials chemistry.
+\newblock \emph{The Journal of chemical physics}, 163\penalty0 (18), 2025.
+
+\bibitem[Batzner et~al.(2022)Batzner, Musaelian, Sun, Geiger, Mailoa, Kornbluth, Molinari, Smidt, and Kozinsky]{NEQUIP}
+Simon Batzner, Albert Musaelian, Lixin Sun, Mario Geiger, Jonathan~P Mailoa, Mordechai Kornbluth, Nicola Molinari, Tess~E Smidt, and Boris Kozinsky.
+\newblock E (3)-equivariant graph neural networks for data-efficient and accurate interatomic potentials.
+\newblock \emph{Nature communications}, 13\penalty0 (1):\penalty0 2453, 2022.
+
+\bibitem[Bommasani et~al.(2022)Bommasani, Hudson, Adeli, Altman, Arora, von Arx, Bernstein, Bohg, Bosselut, Brunskill, Brynjolfsson, Buch, Card, Castellon, Chatterji, Chen, Creel, Davis, Demszky, Donahue, Doumbouya, Durmus, Ermon, Etchemendy, Ethayarajh, Fei-Fei, Finn, Gale, Gillespie, Goel, Goodman, Grossman, Guha, Hashimoto, Henderson, Hewitt, Ho, Hong, Hsu, Huang, Icard, Jain, Jurafsky, Kalluri, Karamcheti, Keeling, Khani, Khattab, Koh, Krass, Krishna, Kuditipudi, Kumar, Ladhak, Lee, Lee, Leskovec, Levent, Li, Li, Ma, Malik, Manning, Mirchandani, Mitchell, Munyikwa, Nair, Narayan, Narayanan, Newman, Nie, Niebles, Nilforoshan, Nyarko, Ogut, Orr, Papadimitriou, Park, Piech, Portelance, Potts, Raghunathan, Reich, Ren, Rong, Roohani, Ruiz, Ryan, Ré, Sadigh, Sagawa, Santhanam, Shih, Srinivasan, Tamkin, Taori, Thomas, Tramèr, Wang, Wang, Wu, Wu, Wu, Xie, Yasunaga, You, Zaharia, Zhang, Zhang, Zhang, Zhang, Zheng, Zhou, and Liang]{foundationmodels}
+Rishi Bommasani, Drew~A. Hudson, Ehsan Adeli, Russ Altman, Simran Arora, Sydney von Arx, Michael~S. Bernstein, Jeannette Bohg, Antoine Bosselut, Emma Brunskill, Erik Brynjolfsson, Shyamal Buch, Dallas Card, Rodrigo Castellon, Niladri Chatterji, Annie Chen, Kathleen Creel, Jared~Quincy Davis, Dora Demszky, Chris Donahue, Moussa Doumbouya, Esin Durmus, Stefano Ermon, John Etchemendy, Kawin Ethayarajh, Li~Fei-Fei, Chelsea Finn, Trevor Gale, Lauren Gillespie, Karan Goel, Noah Goodman, Shelby Grossman, Neel Guha, Tatsunori Hashimoto, Peter Henderson, John Hewitt, Daniel~E. Ho, Jenny Hong, Kyle Hsu, Jing Huang, Thomas Icard, Saahil Jain, Dan Jurafsky, Pratyusha Kalluri, Siddharth Karamcheti, Geoff Keeling, Fereshte Khani, Omar Khattab, Pang~Wei Koh, Mark Krass, Ranjay Krishna, Rohith Kuditipudi, Ananya Kumar, Faisal Ladhak, Mina Lee, Tony Lee, Jure Leskovec, Isabelle Levent, Xiang~Lisa Li, Xuechen Li, Tengyu Ma, Ali Malik, Christopher~D. Manning, Suvir Mirchandani, Eric Mitchell, Zanele Munyikwa, Suraj Nair, Avanika Narayan, Deepak Narayanan, Ben Newman, Allen Nie, Juan~Carlos Niebles, Hamed Nilforoshan, Julian Nyarko, Giray Ogut, Laurel Orr, Isabel Papadimitriou, Joon~Sung Park, Chris Piech, Eva Portelance, Christopher Potts, Aditi Raghunathan, Rob Reich, Hongyu Ren, Frieda Rong, Yusuf Roohani, Camilo Ruiz, Jack Ryan, Christopher Ré, Dorsa Sadigh, Shiori Sagawa, Keshav Santhanam, Andy Shih, Krishnan Srinivasan, Alex Tamkin, Rohan Taori, Armin~W. Thomas, Florian Tramèr, Rose~E. Wang, William Wang, Bohan Wu, Jiajun Wu, Yuhuai Wu, Sang~Michael Xie, Michihiro Yasunaga, Jiaxuan You, Matei Zaharia, Michael Zhang, Tianyi Zhang, Xikun Zhang, Yuhui Zhang, Lucia Zheng, Kaitlyn Zhou, and Percy Liang.
+\newblock On the opportunities and risks of foundation models, 2022.
+\newblock URL \url{https://arxiv.org/abs/2108.07258}.
+
+\bibitem[Braverman et~al.(2025)Braverman, Mets, and Sharma]{braverman2025diy}
+Ben Braverman, David~G Mets, and Sunanda Sharma.
+\newblock Diy raman spectroscopy for biological research.
+\newblock \emph{The Stacks}, 2025.
+
+\bibitem[Br{\'e}mond et~al.(2026)Br{\'e}mond, P{\'e}rez-Jim{\'e}nez, Adamo, and Sancho-Garcia]{bremond2026contemporary}
+E~Br{\'e}mond, AJ~P{\'e}rez-Jim{\'e}nez, Carlo Adamo, and Juan-Carlos Sancho-Garcia.
+\newblock Contemporary dft: learning from traditional and recent trends for the development and assessment of accurate exchange--correlation functionals.
+\newblock \emph{Physical Chemistry Chemical Physics}, 2026.
+
+\bibitem[Bulow et~al.(2026)Bulow, Essock-Burns, and Sharma]{bulow2026coherent}
+Christopher Bulow, Tara Essock-Burns, and Sunanda Sharma.
+\newblock Coherent raman imaging of live, unfixed saccharomyces cerevisiae and mutants aah1$\delta$ and rad6$\delta$.
+\newblock \emph{The Stacks}, 2026.
+
+\bibitem[Chen et~al.(2023)Chen, Wong, Chen, and Tian]{chen2023extending}
+Shouyuan Chen, Sherman Wong, Liangjian Chen, and Yuandong Tian.
+\newblock Extending context window of large language models via positional interpolation.
+\newblock \emph{arXiv preprint arXiv:2306.15595}, 2023.
+
+\bibitem[Cutshaw et~al.(2023)Cutshaw, Uthaman, Hassan, Kothadiya, Wen, and Bardhan]{cutshaw2023emerging}
+Gabriel Cutshaw, Saji Uthaman, Nora Hassan, Siddhant Kothadiya, Xiaona Wen, and Rizia Bardhan.
+\newblock The emerging role of raman spectroscopy as an omics approach for metabolic profiling and biomarker detection toward precision medicine.
+\newblock \emph{Chemical reviews}, 123\penalty0 (13):\penalty0 8297--8346, 2023.
+
+\bibitem[Dall'Osto \& Corni(2022)Dall'Osto and Corni]{dall2022time}
+Giulia Dall'Osto and Stefano Corni.
+\newblock Time resolved raman scattering of molecules: A quantum mechanics approach with stochastic schroedinger equation.
+\newblock \emph{The Journal of Physical Chemistry A}, 126\penalty0 (43):\penalty0 8088--8100, 2022.
+
+\bibitem[DeepSeek-AI et~al.(2024)DeepSeek-AI, Liu, Feng, Wang, Wang, Liu, Zhao, Dengr, Ruan, Dai, Guo, Yang, Chen, Ji, Li, Lin, Luo, Hao, Chen, Li, Zhang, Xu, Yang, Zhang, Ding, Xin, Gao, Li, Qu, Cai, Liang, Guo, Ni, Li, Chen, Yuan, Qiu, Song, Dong, Gao, Guan, Wang, Zhang, Xu, Xia, Zhao, Zhang, Li, Wang, Zhang, Zhang, Tang, Li, Tian, Huang, Wang, Zhang, Zhu, Chen, Du, Chen, Jin, Ge, Pan, Xu, Chen, Li, Lu, Zhou, Chen, Wu, Ye, Ma, Wang, Zhou, Yu, Zhou, Zheng, Wang, Pei, Yuan, Sun, Xiao, Zeng, An, Liu, Liang, Gao, Zhang, Li, Jin, Wang, Bi, Liu, Wang, Shen, Chen, Chen, Nie, Sun, Wang, Liu, Xie, Yu, Song, Zhou, Yang, Lu, Su, Wu, Li, Wei, Zhu, Xu, Huang, Li, Zhao, Sun, Li, Wang, Zheng, Zhang, Xiong, Zhao, He, Tang, Piao, Dong, Tan, Liu, Wang, Guo, Zhu, Wang, Zou, Zha, Ma, Yan, You, Liu, Ren, Ren, Sha, Fu, Huang, Zhang, Xie, Hao, Shao, Wen, Xu, Zhang, Li, Wang, Gu, Li, and Xie]{deepseekai2024deepseekv2strongeconomicalefficient}
+DeepSeek-AI, Aixin Liu, Bei Feng, Bin Wang, Bingxuan Wang, Bo~Liu, Chenggang Zhao, Chengqi Dengr, Chong Ruan, Damai Dai, Daya Guo, Dejian Yang, Deli Chen, Dongjie Ji, Erhang Li, Fangyun Lin, Fuli Luo, Guangbo Hao, Guanting Chen, Guowei Li, H.~Zhang, Hanwei Xu, Hao Yang, Haowei Zhang, Honghui Ding, Huajian Xin, Huazuo Gao, Hui Li, Hui Qu, J.~L. Cai, Jian Liang, Jianzhong Guo, Jiaqi Ni, Jiashi Li, Jin Chen, Jingyang Yuan, Junjie Qiu, Junxiao Song, Kai Dong, Kaige Gao, Kang Guan, Lean Wang, Lecong Zhang, Lei Xu, Leyi Xia, Liang Zhao, Liyue Zhang, Meng Li, Miaojun Wang, Mingchuan Zhang, Minghua Zhang, Minghui Tang, Mingming Li, Ning Tian, Panpan Huang, Peiyi Wang, Peng Zhang, Qihao Zhu, Qinyu Chen, Qiushi Du, R.~J. Chen, R.~L. Jin, Ruiqi Ge, Ruizhe Pan, Runxin Xu, Ruyi Chen, S.~S. Li, Shanghao Lu, Shangyan Zhou, Shanhuang Chen, Shaoqing Wu, Shengfeng Ye, Shirong Ma, Shiyu Wang, Shuang Zhou, Shuiping Yu, Shunfeng Zhou, Size Zheng, T.~Wang, Tian Pei, Tian Yuan, Tianyu Sun, W.~L. Xiao, Wangding Zeng, Wei An, Wen Liu, Wenfeng Liang, Wenjun Gao, Wentao Zhang, X.~Q. Li, Xiangyue Jin, Xianzu Wang, Xiao Bi, Xiaodong Liu, Xiaohan Wang, Xiaojin Shen, Xiaokang Chen, Xiaosha Chen, Xiaotao Nie, Xiaowen Sun, Xiaoxiang Wang, Xin Liu, Xin Xie, Xingkai Yu, Xinnan Song, Xinyi Zhou, Xinyu Yang, Xuan Lu, Xuecheng Su, Y.~Wu, Y.~K. Li, Y.~X. Wei, Y.~X. Zhu, Yanhong Xu, Yanping Huang, Yao Li, Yao Zhao, Yaofeng Sun, Yaohui Li, Yaohui Wang, Yi~Zheng, Yichao Zhang, Yiliang Xiong, Yilong Zhao, Ying He, Ying Tang, Yishi Piao, Yixin Dong, Yixuan Tan, Yiyuan Liu, Yongji Wang, Yongqiang Guo, Yuchen Zhu, Yuduan Wang, Yuheng Zou, Yukun Zha, Yunxian Ma, Yuting Yan, Yuxiang You, Yuxuan Liu, Z.~Z. Ren, Zehui Ren, Zhangli Sha, Zhe Fu, Zhen Huang, Zhen Zhang, Zhenda Xie, Zhewen Hao, Zhihong Shao, Zhiniu Wen, Zhipeng Xu, Zhongyu Zhang, Zhuoshu Li, Zihan Wang, Zihui Gu, Zilin Li, and Ziwei Xie.
+\newblock Deepseek-v2: A strong, economical, and efficient mixture-of-experts language model, 2024.
+\newblock URL \url{https://arxiv.org/abs/2405.04434}.
+
+\bibitem[Deng et~al.(2023)Deng, Yang, Wang, Ojima, Samaras, and Wang]{deng2023systematic}
+Jianyuan Deng, Zhibo Yang, Hehe Wang, Iwao Ojima, Dimitris Samaras, and Fusheng Wang.
+\newblock A systematic study of key elements underlying molecular property prediction.
+\newblock \emph{Nature Communications}, 14\penalty0 (1):\penalty0 6395, 2023.
+
+\bibitem[Eastman et~al.(2023)Eastman, Behara, Dotson, Galvelis, Herr, Horton, Mao, Chodera, Pritchard, et~al.]{eastman2023spice}
+Peter Eastman, Pavan~Kumar Behara, David~L. Dotson, Raimondas Galvelis, John~E. Herr, Josh~T. Horton, Yuezhi Mao, John~D. Chodera, Benjamin~P. Pritchard, et~al.
+\newblock Spice, a dataset of drug-like molecules and peptides for training machine learning potentials.
+\newblock \emph{Scientific Data}, 10:\penalty0 11, 2023.
+\newblock \doi{10.1038/s41597-022-01882-6}.
+\newblock URL \url{https://doi.org/10.1038/s41597-022-01882-6}.
+
+\bibitem[Epifanovsky et~al.(2021)Epifanovsky, Gilbert, Feng, Lee, Mao, Mardirossian, Pokhilko, White, Coons, Dempwolff, et~al.]{epifanovsky2021software}
+Evgeny Epifanovsky, Andrew~TB Gilbert, Xintian Feng, Joonho Lee, Yuezhi Mao, Narbe Mardirossian, Pavel Pokhilko, Alec~F White, Marc~P Coons, Adrian~L Dempwolff, et~al.
+\newblock Software for the frontiers of quantum chemistry: An overview of developments in the q-chem 5 package.
+\newblock \emph{The Journal of chemical physics}, 155\penalty0 (8), 2021.
+
+\bibitem[Essock-Burns et~al.(2025)Essock-Burns, Kolb, Lane, Mets, and Sharma]{essock2025comparison}
+Tara Essock-Burns, Ilya Kolb, Ryan Lane, David~G Mets, and Sunanda Sharma.
+\newblock Comparison of spontaneous raman spectrometers.
+\newblock \emph{The Stacks}, 2025.
+
+\bibitem[Frisch et~al.(2016)Frisch, Trucks, Schlegel, Scuseria, Robb, Cheeseman, Scalmani, Barone, Petersson, Nakatsuji, Li, et~al.]{frisch2016gaussian}
+Michael~E. Frisch, Gary~W. Trucks, H.~Bernhard Schlegel, Gustavo~E. Scuseria, Michael~A. Robb, John~R. Cheeseman, Giovanni Scalmani, Vincenzo Barone, Gunnar~A. Petersson, Hiroshi Nakatsuji, Xiaosong Li, et~al.
+\newblock \emph{Gaussian 16, Revision C.01}.
+\newblock Gaussian, Inc., Wallingford, CT, 2016.
+
+\bibitem[Fu et~al.(2023)Fu, Musaelian, Johansson, Jaakkola, and Kozinsky]{fu2023learning}
+Xiang Fu, Albert Musaelian, Anders Johansson, Tommi Jaakkola, and Boris Kozinsky.
+\newblock Learning interatomic potentials at multiple scales.
+\newblock In \emph{NeurIPS 2023 AI for Science Workshop}, 2023.
+\newblock URL \url{https://openreview.net/forum?id=qFIs4hYZaZ}.
+
+\bibitem[Gala \& Chauhan(2015)Gala and Chauhan]{gala2015principles}
+Urvi Gala and Harsh Chauhan.
+\newblock Principles and applications of raman spectroscopy in pharmaceutical drug discovery and development.
+\newblock \emph{Expert opinion on drug discovery}, 10\penalty0 (2):\penalty0 187--206, 2015.
+
+\bibitem[Gao et~al.(2025)Gao, Yam, Mao, Chen, Chen, and Hu]{gao2025foundation}
+Rongzhi Gao, ChiYung Yam, Jianjun Mao, Shuguang Chen, GuanHua Chen, and Ziyang Hu.
+\newblock A foundation machine learning potential with polarizable long-range interactions for materials modelling.
+\newblock \emph{Nature Communications}, 16\penalty0 (1):\penalty0 10484, 2025.
+
+\bibitem[Garc{\'\i}a-Ter{\'a}n et~al.(2023)]{garcia2023ramanbiolib}
+M~Garc{\'\i}a-Ter{\'a}n et~al.
+\newblock {RamanBioLib}: A public raman spectroscopy dataset for biological samples.
+\newblock \emph{Scientific Data}, 2023.
+
+\bibitem[Gould et~al.(2026)Gould, Kronik, and Pittalis]{gould2026ensemblization}
+Tim Gould, Leeor Kronik, and Stefano Pittalis.
+\newblock “ensemblization” of density functional theory.
+\newblock \emph{The Journal of Chemical Physics}, 164\penalty0 (4), 2026.
+
+\bibitem[Grattafiori et~al.(2024)Grattafiori, Dubey, Jauhri, Pandey, Kadian, Al-Dahle, Letman, Mathur, Schelten, Vaughan, et~al.]{grattafiori2024llama}
+Aaron Grattafiori, Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Alex Vaughan, et~al.
+\newblock The llama 3 herd of models.
+\newblock \emph{arXiv preprint arXiv:2407.21783}, 2024.
+
+\bibitem[Guo et~al.(2025)Guo, Yang, Zhang, Song, Wang, Zhu, Xu, Zhang, Ma, Bi, Zhang, Yu, Wu, Wu, Gou, Shao, Li, Gao, Liu, Xue, Wang, Wu, Feng, Lu, Zhao, Deng, Ruan, Dai, Chen, Ji, Li, Lin, Dai, Luo, Hao, Chen, Li, Zhang, Xu, Ding, Gao, Qu, Li, Guo, Li, Chen, Yuan, Tu, Qiu, Li, Cai, Ni, Liang, Chen, Dong, Hu, You, Gao, Guan, Huang, Yu, Wang, Zhang, Zhao, Wang, Zhang, Xu, Xia, Zhang, Zhang, Tang, Zhou, Li, Wang, Li, Tian, Huang, Zhang, Wang, Chen, Du, Ge, Zhang, Pan, Wang, Chen, Jin, Chen, Lu, Zhou, Chen, Ye, Wang, Yu, Zhou, Pan, Li, Zhou, Wu, Yun, Pei, Sun, Wang, Zeng, Liu, Liang, Gao, Yu, Zhang, Xiao, An, Liu, Wang, Chen, Nie, Cheng, Liu, Xie, Liu, Yang, Li, Su, Lin, Li, Jin, Shen, Chen, Sun, Wang, Song, Zhou, Wang, Shan, Li, Wang, Wei, Zhang, Xu, Li, Zhao, Sun, Wang, Yu, Zhang, Shi, Xiong, He, Piao, Wang, Tan, Ma, Liu, Guo, Ou, Wang, Gong, Zou, He, Xiong, Luo, You, Liu, Zhou, Zhu, Huang, Li, Zheng, Zhu, Ma, Tang, Zha, Yan, Ren, Ren, Sha, Fu, Xu, Xie, Zhang, Hao, Ma, Yan, Wu, Gu, Zhu, Liu, Li, Xie, Song, Pan, Huang, Xu, Zhang, and Zhang]{Guo_2025}
+Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Peiyi Wang, Qihao Zhu, Runxin Xu, Ruoyu Zhang, Shirong Ma, Xiao Bi, Xiaokang Zhang, Xingkai Yu, Yu~Wu, Z.~F. Wu, Zhibin Gou, Zhihong Shao, Zhuoshu Li, Ziyi Gao, Aixin Liu, Bing Xue, Bingxuan Wang, Bochao Wu, Bei Feng, Chengda Lu, Chenggang Zhao, Chengqi Deng, Chong Ruan, Damai Dai, Deli Chen, Dongjie Ji, Erhang Li, Fangyun Lin, Fucong Dai, Fuli Luo, Guangbo Hao, Guanting Chen, Guowei Li, H.~Zhang, Hanwei Xu, Honghui Ding, Huazuo Gao, Hui Qu, Hui Li, Jianzhong Guo, Jiashi Li, Jingchang Chen, Jingyang Yuan, Jinhao Tu, Junjie Qiu, Junlong Li, J.~L. Cai, Jiaqi Ni, Jian Liang, Jin Chen, Kai Dong, Kai Hu, Kaichao You, Kaige Gao, Kang Guan, Kexin Huang, Kuai Yu, Lean Wang, Lecong Zhang, Liang Zhao, Litong Wang, Liyue Zhang, Lei Xu, Leyi Xia, Mingchuan Zhang, Minghua Zhang, Minghui Tang, Mingxu Zhou, Meng Li, Miaojun Wang, Mingming Li, Ning Tian, Panpan Huang, Peng Zhang, Qiancheng Wang, Qinyu Chen, Qiushi Du, Ruiqi Ge, Ruisong Zhang, Ruizhe Pan, Runji Wang, R.~J. Chen, R.~L. Jin, Ruyi Chen, Shanghao Lu, Shangyan Zhou, Shanhuang Chen, Shengfeng Ye, Shiyu Wang, Shuiping Yu, Shunfeng Zhou, Shuting Pan, S.~S. Li, Shuang Zhou, Shaoqing Wu, Tao Yun, Tian Pei, Tianyu Sun, T.~Wang, Wangding Zeng, Wen Liu, Wenfeng Liang, Wenjun Gao, Wenqin Yu, Wentao Zhang, W.~L. Xiao, Wei An, Xiaodong Liu, Xiaohan Wang, Xiaokang Chen, Xiaotao Nie, Xin Cheng, Xin Liu, Xin Xie, Xingchao Liu, Xinyu Yang, Xinyuan Li, Xuecheng Su, Xuheng Lin, X.~Q. Li, Xiangyue Jin, Xiaojin Shen, Xiaosha Chen, Xiaowen Sun, Xiaoxiang Wang, Xinnan Song, Xinyi Zhou, Xianzu Wang, Xinxia Shan, Y.~K. Li, Y.~Q. Wang, Y.~X. Wei, Yang Zhang, Yanhong Xu, Yao Li, Yao Zhao, Yaofeng Sun, Yaohui Wang, Yi~Yu, Yichao Zhang, Yifan Shi, Yiliang Xiong, Ying He, Yishi Piao, Yisong Wang, Yixuan Tan, Yiyang Ma, Yiyuan Liu, Yongqiang Guo, Yuan Ou, Yuduan Wang, Yue Gong, Yuheng Zou, Yujia He, Yunfan Xiong, Yuxiang Luo, Yuxiang You, Yuxuan Liu, Yuyang Zhou, Y.~X. Zhu, Yanping Huang, Yaohui Li, Yi~Zheng, Yuchen Zhu, Yunxian Ma, Ying Tang, Yukun Zha, Yuting Yan, Z.~Z. Ren, Zehui Ren, Zhangli Sha, Zhe Fu, Zhean Xu, Zhenda Xie, Zhengyan Zhang, Zhewen Hao, Zhicheng Ma, Zhigang Yan, Zhiyu Wu, Zihui Gu, Zijia Zhu, Zijun Liu, Zilin Li, Ziwei Xie, Ziyang Song, Zizheng Pan, Zhen Huang, Zhipeng Xu, Zhongyu Zhang, and Zhen Zhang.
+\newblock Deepseek-r1 incentivizes reasoning in llms through reinforcement learning.
+\newblock \emph{Nature}, 645\penalty0 (8081):\penalty0 633–638, September 2025.
+\newblock ISSN 1476-4687.
+\newblock \doi{10.1038/s41586-025-09422-z}.
+\newblock URL \url{http://dx.doi.org/10.1038/s41586-025-09422-z}.
+
+\bibitem[Guo et~al.(2023)Guo, Guo, Nan, Tian, Iyer, Ma, Wiest, Zhang, Wang, Zhang, and Chawla]{guo2023graphbasedmolecularrepresentationlearning}
+Zhichun Guo, Kehan Guo, Bozhao Nan, Yijun Tian, Roshni~G. Iyer, Yihong Ma, Olaf Wiest, Xiangliang Zhang, Wei Wang, Chuxu Zhang, and Nitesh~V. Chawla.
+\newblock Graph-based molecular representation learning, 2023.
+\newblock URL \url{https://arxiv.org/abs/2207.04869}.
+
+\bibitem[Han et~al.(2012)Han, Ozaki, and Zhao]{han2012label}
+Xiao~Xia Han, Yukihiro Ozaki, and Bing Zhao.
+\newblock Label-free detection in biological applications of surface-enhanced raman scattering.
+\newblock \emph{TrAC Trends in Analytical Chemistry}, 38:\penalty0 67--78, 2012.
+
+\bibitem[Heller et~al.(1982)Heller, Sundberg, and Tannor]{heller1982simple}
+Eric~J Heller, Robert Sundberg, and David Tannor.
+\newblock Simple aspects of raman scattering.
+\newblock \emph{The Journal of Physical Chemistry}, 86\penalty0 (10):\penalty0 1822--1833, 1982.
+
+\bibitem[Herman(2003)]{herman2003raman}
+Irving~P Herman.
+\newblock Raman scattering.
+\newblock \emph{digital Encyclopedia of Applied Physics}, 2003.
+
+\bibitem[Hohenberg \& Kohn(1964)Hohenberg and Kohn]{hohenberg1964inhomogeneous}
+Pierre Hohenberg and Walter Kohn.
+\newblock Inhomogeneous electron gas.
+\newblock \emph{Physical review}, 136\penalty0 (3B):\penalty0 B864, 1964.
+
+\bibitem[Hoja et~al.(2021)Hoja, Medrano~Sandonas, Ernst, Vazquez-Mayagoitia, DiStasio, Tkatchenko, et~al.]{hoja2021qm7x}
+Johannes Hoja, Leonardo Medrano~Sandonas, Brian~G. Ernst, Alvaro Vazquez-Mayagoitia, Robert A.~Jr. DiStasio, Alexandre Tkatchenko, et~al.
+\newblock Qm7-x, a comprehensive dataset of quantum-mechanical properties spanning the chemical space of small organic molecules.
+\newblock \emph{Scientific Data}, 8:\penalty0 43, 2021.
+\newblock \doi{10.1038/s41597-021-00812-2}.
+\newblock URL \url{https://doi.org/10.1038/s41597-021-00812-2}.
+
+\bibitem[Kent(1999)]{kent1999techniques}
+Paul Richard~Charles Kent.
+\newblock \emph{Techniques and applications of quantum Monte Carlo}.
+\newblock PhD thesis, University of Cambridge, 1999.
+
+\bibitem[Khorana et~al.(2024)Khorana, Noack, and Qian]{khorana2024polyatomiccomplexestopologicallyinformedlearning}
+Rahul Khorana, Marcus Noack, and Jin Qian.
+\newblock Polyatomic complexes: A topologically-informed learning representation for atomistic systems, 2024.
+\newblock URL \url{https://arxiv.org/abs/2409.15600}.
+
+\bibitem[Kohn(1999)]{kohn1999nobel}
+Walter Kohn.
+\newblock Nobel lecture: Electronic structure of matter---wave functions and density functionals.
+\newblock \emph{Reviews of modern physics}, 71\penalty0 (5):\penalty0 1253, 1999.
+
+\bibitem[Kohn \& Sham(1965)Kohn and Sham]{kohn1965self}
+Walter Kohn and Lu~Jeu Sham.
+\newblock Self-consistent equations including exchange and correlation effects.
+\newblock \emph{Physical review}, 140\penalty0 (4A):\penalty0 A1133, 1965.
+
+\bibitem[Koker et~al.(2025)Koker, Kotak, and Smidt]{koker2025training}
+Teddy Koker, Mit Kotak, and Tess Smidt.
+\newblock Training a foundation model for materials on a budget.
+\newblock \emph{arXiv preprint arXiv:2508.16067}, 2025.
+
+\bibitem[Kraisler et~al.(2021)Kraisler, Hodgson, and Gross]{kraisler2021kohn}
+Eli Kraisler, MJP Hodgson, and EKU Gross.
+\newblock From kohn--sham to many-electron energies via step structures in the exchange-correlation potential.
+\newblock \emph{Journal of Chemical Theory and Computation}, 17\penalty0 (3):\penalty0 1390--1407, 2021.
+
+\bibitem[Kramers \& Heisenberg(1925)Kramers and Heisenberg]{kramers1925streuung}
+Hendrik~A Kramers and Werner Heisenberg.
+\newblock {\"U}ber die streuung von strahlung durch atome.
+\newblock \emph{Zeitschrift f{\"u}r Physik}, 31\penalty0 (1):\penalty0 681--708, 1925.
+
+\bibitem[Krenn et~al.(2020)Krenn, Häse, Nigam, Friederich, and Aspuru-Guzik]{Krenn_2020}
+Mario Krenn, Florian Häse, AkshatKumar Nigam, Pascal Friederich, and Alan Aspuru-Guzik.
+\newblock Self-referencing embedded strings (selfies): A 100% robust molecular string representation.
+\newblock \emph{Machine Learning: Science and Technology}, 1\penalty0 (4):\penalty0 045024, October 2020.
+\newblock ISSN 2632-2153.
+\newblock \doi{10.1088/2632-2153/aba947}.
+\newblock URL \url{http://dx.doi.org/10.1088/2632-2153/aba947}.
+
+\bibitem[Lammert(2007)]{lammert2007differentiability}
+Paul~E Lammert.
+\newblock Differentiability of lieb functional in electronic density functional theory.
+\newblock \emph{International Journal of Quantum Chemistry}, 107\penalty0 (10):\penalty0 1943--1953, 2007.
+
+\bibitem[Langer et~al.(2022)Langer, Goe{\ss}mann, and Rupp]{langer2022representations}
+Marcel~F Langer, Alex Goe{\ss}mann, and Matthias Rupp.
+\newblock Representations of molecules and materials for interpolation of quantum-mechanical simulations via machine learning.
+\newblock \emph{npj Computational Materials}, 8\penalty0 (1):\penalty0 41, 2022.
+
+\bibitem[Lee \& Heller(1979)Lee and Heller]{lee1979time}
+Soo-Y Lee and Eric~J Heller.
+\newblock Time-dependent theory of raman scattering.
+\newblock \emph{The Journal of chemical physics}, 71\penalty0 (12):\penalty0 4777--4788, 1979.
+
+\bibitem[Levy(1979)]{levy1979universal}
+Mel Levy.
+\newblock Universal variational functionals of electron densities, first-order density matrices, and natural spin-orbitals and solution of the v-representability problem.
+\newblock \emph{Proceedings of the National Academy of Sciences}, 76\penalty0 (12):\penalty0 6062--6065, 1979.
+
+\bibitem[Lieb \& Schrader(2013)Lieb and Schrader]{lieb2013current}
+Elliott~H Lieb and Robert Schrader.
+\newblock Current densities in density-functional theory.
+\newblock \emph{Physical Review A—Atomic, Molecular, and Optical Physics}, 88\penalty0 (3):\penalty0 032516, 2013.
+
+\bibitem[Long(2002)]{long2002raman}
+Derek~Albert Long.
+\newblock \emph{The Raman Effect: A Unified Treatment of the Theory of Raman Scattering by Molecules}.
+\newblock John Wiley \& Sons, 2002.
+
+\bibitem[Lysogorskiy et~al.(2026)Lysogorskiy, Bochkarev, and Drautz]{GRACE-2L}
+Yury Lysogorskiy, Anton Bochkarev, and Ralf Drautz.
+\newblock Graph atomic cluster expansion for foundational machine learning interatomic potentials.
+\newblock \emph{npj Computational Materials}, 2026.
+
+\bibitem[Malladi et~al.(2023)Malladi, Gao, Nichani, Damian, Lee, Chen, and Arora]{malladi2023finetuning}
+Sadhika Malladi, Tianyu Gao, Eshaan Nichani, Alex Damian, Jason~D. Lee, Danqi Chen, and Sanjeev Arora.
+\newblock Fine-tuning language models with just forward passes.
+\newblock In \emph{Thirty-seventh Conference on Neural Information Processing Systems}, 2023.
+\newblock URL \url{https://openreview.net/forum?id=Vota6rFhBQ}.
+
+\bibitem[Mazitov et~al.(2025)Mazitov, Bigi, Kellner, Pegolo, Tisi, Fraux, Pozdnyakov, Loche, and Ceriotti]{PET}
+Arslan Mazitov, Filippo Bigi, Matthias Kellner, Paolo Pegolo, Davide Tisi, Guillaume Fraux, Sergey Pozdnyakov, Philip Loche, and Michele Ceriotti.
+\newblock Pet-mad as a lightweight universal interatomic potential for advanced materials modeling.
+\newblock \emph{Nature Communications}, 16\penalty0 (1):\penalty0 10653, 2025.
+
+\bibitem[Mietzsch(2020)]{mietzsch2020validity}
+Nicco Mietzsch.
+\newblock The validity of the local density approximation for smooth short range interaction potentials.
+\newblock \emph{Journal of Mathematical Physics}, 61\penalty0 (11), 2020.
+
+\bibitem[Monroy et~al.(2023)Monroy, Magnus, González-Herráez, Naranjo, and Kieu]{COVERAGE}
+Laura Monroy, Joshua Magnus, Miguel González-Herráez, Fernando~B. Naranjo, and Khanh Kieu.
+\newblock Numerical evaluation of spectral coverage and spectral resolution in coherent raman scattering spectroscopy using a broadband fiber laser source.
+\newblock \emph{Journal of Raman Spectroscopy}, 54\penalty0 (9):\penalty0 1001--1010, 2023.
+\newblock \doi{https://doi.org/10.1002/jrs.6579}.
+\newblock URL \url{https://analyticalsciencejournals.onlinelibrary.wiley.com/doi/abs/10.1002/jrs.6579}.
+
+\bibitem[Musaelian et~al.(2023)Musaelian, Batzner, Johansson, Sun, Owen, Kornbluth, and Kozinsky]{musaelian2023learning}
+Albert Musaelian, Simon Batzner, Anders Johansson, Lixin Sun, Cameron~J Owen, Mordechai Kornbluth, and Boris Kozinsky.
+\newblock Learning local equivariant representations for large-scale atomistic dynamics.
+\newblock \emph{Nature Communications}, 14\penalty0 (1):\penalty0 579, 2023.
+
+\bibitem[Neuville et~al.(2014)Neuville, De~Ligny, and Henderson]{neuville2014advances}
+Daniel~R Neuville, Dominique De~Ligny, and Grant~S Henderson.
+\newblock Advances in raman spectroscopy applied to earth and material sciences.
+\newblock \emph{Reviews in mineralogy and geochemistry}, 78\penalty0 (1):\penalty0 509--541, 2014.
+
+\bibitem[Nomura et~al.(2025)Nomura, Hattori, Ohmura, Kanemasu, Shimamura, Dasgupta, Nakano, Kalia, and Vashishta]{ALLEGRO-FM}
+Ken-ichi Nomura, Shinnosuke Hattori, Satoshi Ohmura, Ikumi Kanemasu, Kohei Shimamura, Nabankur Dasgupta, Aiichiro Nakano, Rajiv~K Kalia, and Priya Vashishta.
+\newblock Allegro-fm: Toward an equivariant foundation model for exascale molecular dynamics simulations.
+\newblock \emph{The Journal of Physical Chemistry Letters}, 16\penalty0 (25):\penalty0 6637--6644, 2025.
+
+\bibitem[Ouyang et~al.(2022)Ouyang, Wu, Jiang, Almeida, Wainwright, Mishkin, Zhang, Agarwal, Slama, Gray, Schulman, Hilton, Kelton, Miller, Simens, Askell, Welinder, Christiano, Leike, and Lowe]{ouyang2022training}
+Long Ouyang, Jeffrey Wu, Xu~Jiang, Diogo Almeida, Carroll Wainwright, Pamela Mishkin, Chong Zhang, Sandhini Agarwal, Katarina Slama, Alex Gray, John Schulman, Jacob Hilton, Fraser Kelton, Luke Miller, Maddie Simens, Amanda Askell, Peter Welinder, Paul Christiano, Jan Leike, and Ryan Lowe.
+\newblock Training language models to follow instructions with human feedback.
+\newblock In Alice~H. Oh, Alekh Agarwal, Danielle Belgrave, and Kyunghyun Cho (eds.), \emph{Advances in Neural Information Processing Systems}, 2022.
+\newblock URL \url{https://openreview.net/forum?id=TG8KACxEON}.
+
+\bibitem[Paudel et~al.(2015)Paudel, Raijada, and Rantanen]{paudel2015raman}
+Amrit Paudel, Dhara Raijada, and Jukka Rantanen.
+\newblock Raman spectroscopy in pharmaceutical product design.
+\newblock \emph{Advanced drug delivery reviews}, 89:\penalty0 3--20, 2015.
+
+\bibitem[Penz et~al.(2023)Penz, Tellgren, Csirik, Ruggenthaler, and Laestadius]{penz2023structure}
+Markus Penz, Erik~I Tellgren, Mih{\'a}ly~A Csirik, Michael Ruggenthaler, and Andre Laestadius.
+\newblock The structure of density-potential mapping. part i: Standard density-functional theory.
+\newblock \emph{ACS Physical Chemistry Au}, 3\penalty0 (4):\penalty0 334--347, 2023.
+
+\bibitem[Perfetto \& Stefanucci(2012)Perfetto and Stefanucci]{Perfetto_2012}
+E.~Perfetto and G.~Stefanucci.
+\newblock Missing derivative discontinuity of the exchange-correlation energy for attractive interactions: The charge kondo effect.
+\newblock \emph{Physical Review B}, 86\penalty0 (8), August 2012.
+\newblock ISSN 1550-235X.
+\newblock \doi{10.1103/physrevb.86.081409}.
+\newblock URL \url{http://dx.doi.org/10.1103/PhysRevB.86.081409}.
+
+\bibitem[Porezag \& Pederson(1996)Porezag and Pederson]{Porezag_1996}
+Dirk Porezag and Mark~R. Pederson.
+\newblock Infrared intensities and raman-scattering activities within density-functional theory.
+\newblock \emph{Physical Review B}, 54\penalty0 (11):\penalty0 7830--7836, 1996.
+\newblock \doi{10.1103/PhysRevB.54.7830}.
+\newblock URL \url{https://doi.org/10.1103/PhysRevB.54.7830}.
+
+\bibitem[Radford et~al.()Radford, Narasimhan, Salimans, Sutskever, et~al.]{radford2018improving}
+Alec Radford, Karthik Narasimhan, Tim Salimans, Ilya Sutskever, et~al.
+\newblock Improving language understanding by generative pre-training.
+
+\bibitem[Rafailov et~al.(2023)Rafailov, Sharma, Mitchell, Manning, Ermon, and Finn]{rafailov2023direct}
+Rafael Rafailov, Archit Sharma, Eric Mitchell, Christopher~D Manning, Stefano Ermon, and Chelsea Finn.
+\newblock Direct preference optimization: Your language model is secretly a reward model.
+\newblock \emph{Advances in neural information processing systems}, 36:\penalty0 53728--53741, 2023.
+
+\bibitem[Ramakrishnan et~al.(2015)Ramakrishnan, Dral, Rupp, and von Lilienfeld]{deltaMLramakrishnan2015}
+Raghunathan Ramakrishnan, Pavlo~O. Dral, Matthias Rupp, and O.~Anatole von Lilienfeld.
+\newblock Big data meets quantum chemistry approximations: The $\delta$-machine learning approach.
+\newblock \emph{Journal of Chemical Theory and Computation}, 11\penalty0 (5):\penalty0 2087--2096, 2015.
+\newblock \doi{10.1021/acs.jctc.5b00099}.
+\newblock URL \url{https://doi.org/10.1021/acs.jctc.5b00099}.
+\newblock PMID: 26574412.
+
+\bibitem[Salimans et~al.(2017)Salimans, Ho, Chen, Sidor, and Sutskever]{salimans2017evolutionstrategiesscalablealternative}
+Tim Salimans, Jonathan Ho, Xi~Chen, Szymon Sidor, and Ilya Sutskever.
+\newblock Evolution strategies as a scalable alternative to reinforcement learning, 2017.
+\newblock URL \url{https://arxiv.org/abs/1703.03864}.
+
+\bibitem[Scott \& Radom(1996)Scott and Radom]{Scott_1996}
+Anthony~P. Scott and Leo Radom.
+\newblock Harmonic vibrational frequencies: An evaluation of hartree-fock, m{\"o}ller-plesset, quadratic configuration interaction, density functional theory, and semiempirical scale factors.
+\newblock \emph{The Journal of Physical Chemistry}, 100\penalty0 (41):\penalty0 16502--16513, 1996.
+\newblock \doi{10.1021/jp960976r}.
+\newblock URL \url{https://doi.org/10.1021/jp960976r}.
+
+\bibitem[Sheng(2026)]{sheng2026exactdensityfunctionaltheoryparallel}
+Nan Sheng.
+\newblock Exact density-functional theory as parallel ensemble variational hierarchies: from lieb's formulation to kohn-sham theory, 2026.
+\newblock URL \url{https://arxiv.org/abs/2603.23399}.
+
+\bibitem[Sitkiewicz et~al.(2022)Sitkiewicz, Zale{\'s}ny, Ramos-Cordoba, Luis, and Matito]{Sitkiewicz_2022}
+Sebastian~P. Sitkiewicz, Robert Zale{\'s}ny, Eloy Ramos-Cordoba, Josep~M. Luis, and Eduard Matito.
+\newblock How reliable are modern density functional approximations to simulate vibrational spectroscopies?
+\newblock \emph{The Journal of Physical Chemistry Letters}, 13\penalty0 (25):\penalty0 5963--5968, June 2022.
+\newblock \doi{10.1021/acs.jpclett.2c01278}.
+\newblock URL \url{https://doi.org/10.1021/acs.jpclett.2c01278}.
+
+\bibitem[Sorrentino et~al.(2026)Sorrentino, Gussoni, Calcagno, Pasotti, Avagliano, Rivalta, Garavelli, and Polli]{sorrentino2025mol2raman}
+Salvatore Sorrentino, Alessandro Gussoni, Francesco Calcagno, Gioele Pasotti, Davide Avagliano, Ivan Rivalta, Marco Garavelli, and Dario Polli.
+\newblock Mol2raman: a graph neural network model for predicting raman spectra from smiles representations.
+\newblock \emph{Digital Discovery}, 5:\penalty0 161--176, 2026.
+\newblock \doi{10.1039/D5DD00210A}.
+\newblock URL \url{https://doi.org/10.1039/D5DD00210A}.
+
+\bibitem[Sun et~al.(2022)Sun, Shao, Qian, Huang, and Qiu]{sun2022bbt}
+Tianxiang Sun, Yunfan Shao, Hong Qian, Xuanjing Huang, and Xipeng Qiu.
+\newblock Black-box tuning for language-model-as-a-service.
+\newblock In \emph{Proceedings of {ICML}}, 2022.
+
+\bibitem[Sutter et~al.(2024)Sutter, Penz, Ruggenthaler, Leeuwen, and Giesbertz]{sutter2024solution}
+Sarina~M Sutter, Markus Penz, Michael Ruggenthaler, Robert~van Leeuwen, and Klaas~JH Giesbertz.
+\newblock Solution of the v-representability problem on a one-dimensional torus.
+\newblock \emph{Journal of Physics A: Mathematical and Theoretical}, 57\penalty0 (47):\penalty0 475202, 2024.
+
+\bibitem[Taherivardanjani et~al.(2022)Taherivardanjani, Elfgen, Reckien, Suarez, Perlt, and Kirchner]{taherivardanjani2022benchmarking}
+Shima Taherivardanjani, Roman Elfgen, Werner Reckien, Estela Suarez, Eva Perlt, and Barbara Kirchner.
+\newblock Benchmarking the computational costs and quality of vibrational spectra from ab initio simulations.
+\newblock \emph{Advanced theory and simulations}, 5\penalty0 (1):\penalty0 2100293, 2022.
+
+\bibitem[Tobin et~al.(2017)Tobin, Fong, Ray, Schneider, Zaremba, and Abbeel]{Sim2Real}
+Josh Tobin, Rachel Fong, Alex Ray, Jonas Schneider, Wojciech Zaremba, and Pieter Abbeel.
+\newblock Domain randomization for transferring deep neural networks from simulation to the real world.
+\newblock In \emph{2017 IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)}, pp.\  23--30, 2017.
+\newblock \doi{10.1109/IROS.2017.8202133}.
+
+\bibitem[Trushin et~al.(2024)Trushin, Erhard, and G{\"o}rling]{trushin2024violations}
+Egor Trushin, Jannis Erhard, and Andreas G{\"o}rling.
+\newblock Violations of the v-representability condition underlying kohn-sham density-functional theory.
+\newblock \emph{Physical Review A}, 110\penalty0 (2):\penalty0 L020802, 2024.
+
+\bibitem[Wang et~al.(2025)Wang, Hu, Tan, and Jia]{elora}
+Chen Wang, Siyu Hu, Guangming Tan, and Weile Jia.
+\newblock {EL}o{RA}: Low-rank adaptation for equivariant {GNN}s.
+\newblock In \emph{Forty-second International Conference on Machine Learning}, 2025.
+\newblock URL \url{https://openreview.net/forum?id=hcoxm3Vwgy}.
+
+\bibitem[Wei et~al.(2022)Wei, Bosma, Zhao, Guu, Yu, Lester, Du, Dai, and Le]{wei2022finetuned}
+Jason Wei, Maarten Bosma, Vincent Zhao, Kelvin Guu, Adams~Wei Yu, Brian Lester, Nan Du, Andrew~M. Dai, and Quoc~V Le.
+\newblock Finetuned language models are zero-shot learners.
+\newblock In \emph{International Conference on Learning Representations}, 2022.
+\newblock URL \url{https://openreview.net/forum?id=gEZrGCozdqR}.
+
+\bibitem[Wilson et~al.(1955)Wilson, Decius, and Cross]{wilson1955molecular}
+Edgar~Bright Wilson, J~C Decius, and Paul~C Cross.
+\newblock \emph{Molecular Vibrations: The Theory of Infrared and Raman Vibrational Spectra}.
+\newblock McGraw-Hill, 1955.
+
+\bibitem[Yuan et~al.(2026)Yuan, Liu, Chen, Zhong, Raja, Kreiman, Vargas, Xu, Head-Gordon, Yang, et~al.]{yuan2026foundation}
+Eric C-Y Yuan, Yunsheng Liu, Junmin Chen, Peichen Zhong, Sanjeev Raja, Tobias Kreiman, Santiago Vargas, Wenbin Xu, Martin Head-Gordon, Chao Yang, et~al.
+\newblock Foundation models for atomistic simulation of chemistry and materials.
+\newblock \emph{Nature Reviews Chemistry}, pp.\  1--19, 2026.
+
+\bibitem[Zhang et~al.(2023)Zhang, Chen, Bukharin, Karampatziakis, He, Cheng, Chen, and Zhao]{zhang2023adalora}
+Qingru Zhang, Minshuo Chen, Alexander Bukharin, Nikos Karampatziakis, Pengcheng He, Yu~Cheng, Weizhu Chen, and Tuo Zhao.
+\newblock Adalora: Adaptive budget allocation for parameter-efficient fine-tuning.
+\newblock \emph{arXiv preprint arXiv:2303.10512}, 2023.
+\newblock URL \url{https://arxiv.org/abs/2303.10512}.
+
+\bibitem[Zhou et~al.(2023)Zhou, Liu, Xu, Iyer, Sun, Mao, Ma, Efrat, Yu, YU, Zhang, Ghosh, Lewis, Zettlemoyer, and Levy]{zhou2023lima}
+Chunting Zhou, Pengfei Liu, Puxin Xu, Srini Iyer, Jiao Sun, Yuning Mao, Xuezhe Ma, Avia Efrat, Ping Yu, LILI YU, Susan Zhang, Gargi Ghosh, Mike Lewis, Luke Zettlemoyer, and Omer Levy.
+\newblock {LIMA}: Less is more for alignment.
+\newblock In \emph{Thirty-seventh Conference on Neural Information Processing Systems}, 2023.
+\newblock URL \url{https://openreview.net/forum?id=KBMOKmX2he}.
+
+\bibitem[Zou et~al.(2023)Zou, Zhang, Liang, Wei, Leng, Jiang, Luo, and Hu]{zou2023deep}
+Zihan Zou, Yujin Zhang, Lijun Liang, Mingzhi Wei, Jiancai Leng, Jun Jiang, Yi~Luo, and Wei Hu.
+\newblock A deep learning model for predicting selected organic molecular spectra.
+\newblock \emph{Nature Computational Science}, 3\penalty0 (11):\penalty0 957--964, 2023.
+\newblock \doi{10.1038/s43588-023-00550-y}.
+\newblock URL \url{https://doi.org/10.1038/s43588-023-00550-y}.
+
+\end{thebibliography}

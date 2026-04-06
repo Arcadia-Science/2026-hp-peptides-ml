@@ -1,0 +1,6 @@
+$pdf_mode = 1;
+$pdflatex = "/Library/TeX/texbin/pdflatex -synctex=1 -interaction=nonstopmode -file-line-error %O %S";
+$bibtex = "/Library/TeX/texbin/bibtex";
+$makeindex = "/Library/TeX/texbin/makeindex";
+$force_mode = 1;
+$bibtex_use = 1;
