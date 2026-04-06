@@ -66,7 +66,7 @@ curl -X POST "http://localhost:8000/predict/raman" \
 
 ## Paper
 
-The manuscript is in `paper/paper.tex`, targeting TMLR. Compile with:
+The manuscript is in `paper/paper.tex`. Compile with:
 ```bash
 cd paper && latexmk -pdf paper.tex
 ```
