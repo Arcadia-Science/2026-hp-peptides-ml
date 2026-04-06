@@ -1,4 +1,0 @@
-samples/shard_000013.pt	0	400	17
-samples/shard_000013.pt	1	400	17
-samples/shard_000013.pt	2	400	17
-samples/shard_000013.pt	18	406	15
