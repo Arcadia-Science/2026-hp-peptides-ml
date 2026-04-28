@@ -1,7 +1,7 @@
 # SpectraLoRAFM
 [![DOI](https://zenodo.org/badge/1129123632.svg)](https://doi.org/10.5281/zenodo.19859798)
 
-Post-training compact molecular GNNs for surrogate Raman prediction and post-hoc spectral alignment via structural prompting and derivative-free optimization.
+Post-training compact molecular GNNs for surrogate Raman prediction and post-hoc spectral alignment via structural prompting and derivative-free optimization via evolution strategies.
 
 ## Overview
 
