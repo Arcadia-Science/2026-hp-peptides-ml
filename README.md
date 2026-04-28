@@ -1,4 +1,4 @@
-# SpectraLoRAFM
+# SpectraLoRA
 [![DOI](https://zenodo.org/badge/1129123632.svg)](https://doi.org/10.5281/zenodo.19859798)
 
 Post-training compact molecular GNNs for surrogate Raman prediction and post-hoc spectral alignment via structural prompting and derivative-free optimization via evolution strategies.
@@ -54,6 +54,12 @@ curl -X POST "http://localhost:8000/predict/raman" \
   -H "Content-Type: application/json" \
   -d '{"dataset":"qm9s","molecule_id":1}'
 ```
+
+## Hardware Requirements & Local Setup
+- TODO
+- 
+
+
 
 ## Key Results
 
