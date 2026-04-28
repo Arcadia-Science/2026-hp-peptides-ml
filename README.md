@@ -15,8 +15,9 @@ The pipeline is deployed as a four-plane distributed architecture. An Amazon FSx
 
 ## Conceptual Figure
 
+<center>
 <img width="624" height="346" alt="Screenshot 2026-04-28 at 2 50 33 PM" src="https://github.com/user-attachments/assets/c13db536-d091-4901-a853-1d4e2a731e7b" />
-
+</center>
 
 ## Repository Layout
 
@@ -74,6 +75,12 @@ curl -X POST "http://localhost:8000/predict/raman" \
 | FP Recall@15 | 0.438 | **0.703** | 0.634 |
 | FP Precision@15 | 0.444 | 0.440 | 0.629 |
 | Cosine (full) | 0.216 | 0.486 | 0.689 |
+
+
+## Results Figure
+<center>
+<img width="634" height="243" alt="Screenshot 2026-04-28 at 2 52 01 PM" src="https://github.com/user-attachments/assets/cf164aa6-0124-4f47-9584-ef90409951c1" />
+</center>
 
 ## Paper
 
