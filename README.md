@@ -13,6 +13,11 @@ SpectraLoRA adapts a 8M-parameter equivariant molecular GNN model (DetaNet) to p
 
 The pipeline is deployed as a four-plane distributed architecture. An Amazon FSx for Lustre parallel file system serves as the shared storage backbone. Ray orchestrates both the offline data-engineering phase (CPU workers featurize heterogeneous molecular sources into sharded PyTorch Geometric graphs using lock-free, shared-nothing SQLite3 indexing) and the distributed training phase (DDP/FSDP jobs with NCCL-based gradient synchronization). Data loading streams pre-sharded, pre-randomized chunks assigned deterministically by GPU rank, trading perfect global shuffle for sustained sequential I/O. Online serving splits into a public FastAPI service (dataset browsing, inference orchestration, Postgres metadata, Redis caching) and a dedicated DetaNet model service with geometries stored in Parquet shards for random access.
 
+## Conceptual Figure
+
+<img width="624" height="346" alt="Screenshot 2026-04-28 at 2 50 33 PM" src="https://github.com/user-attachments/assets/c13db536-d091-4901-a853-1d4e2a731e7b" />
+
+
 ## Repository Layout
 
 ```
