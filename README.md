@@ -78,6 +78,10 @@ curl -X POST "http://localhost:8000/predict/raman" \
 | FP Precision@15 | 0.444 | 0.440 | 0.629 |
 | Cosine (full) | 0.216 | 0.486 | 0.689 |
 
+## Demonstration
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](<REPLACE>)
+
+
 
 ## Results Figure
 <p align="center">
